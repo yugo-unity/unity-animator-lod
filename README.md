@@ -4,6 +4,8 @@ English | [日本語](README.ja.md)
 
 A test project for reducing CPU/GPU cost when many Animators are on screen. The core is the `AnimatorLod` component and `AnimatorLodSystem`, which processes all instances in one place.
 
+<img width="1920" height="1080" alt="HAL10110083060-20260928-0233" src="https://github.com/user-attachments/assets/6d57b7c8-3e2f-47fe-b753-c43c8094eb66" />
+
 ## Layout
 
 | Kind | File | Role |
