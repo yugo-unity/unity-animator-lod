@@ -4,6 +4,8 @@
 
 大量の Animator を表示するときの CPU/GPU 負荷を下げるための検証用プロジェクトです。中心となるのは `AnimatorLod` コンポーネントと、それを一括で処理する `AnimatorLodSystem` です。
 
+<img width="1920" height="1080" alt="HAL10110083060-20260928-0233" src="https://github.com/user-attachments/assets/20cbb9f0-2ad0-4a38-84cf-eab0306b4fa4" />
+
 ## 構成
 
 | 種類 | ファイル | 役割 |
