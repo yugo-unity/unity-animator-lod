@@ -68,11 +68,6 @@ PrefabInstance:
       insertIndex: -1
       addedObject: {fileID: 3452410069633179023}
   m_SourcePrefab: {fileID: 100100000, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
---- !u!4 &1937007777770394169 stripped
-Transform:
-  m_CorrespondingSourceObject: {fileID: 8914113513233755437, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
-  m_PrefabInstance: {fileID: 7013487037900848916}
-  m_PrefabAsset: {fileID: 0}
 --- !u!137 &2493018352190117325 stripped
 SkinnedMeshRenderer:
   m_CorrespondingSourceObject: {fileID: 4885301371922852569, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
@@ -99,7 +94,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e59a1a2e504e7434c87f1eab0ba1bfdb, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.AnimatorLod
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.AnimatorLod
   animator: {fileID: 3476353284042801797}
   renderers:
   - renderer: {fileID: 2493018352190117325}
@@ -107,25 +102,18 @@ MonoBehaviour:
     - {fileID: 0}
     - {fileID: 4300000, guid: 17fa8b6d5f1699940a71593673f8b2e3, type: 2}
     - {fileID: 4300000, guid: 7372b31eb260a7d4ebc3f3109ee3e2b3, type: 2}
-    rootBone: {fileID: 1937007777770394169}
-    localBounds:
-      m_Center: {x: -0.000000029802322, y: -0.09214255, z: 0.026248664}
-      m_Extent: {x: 0.52818465, y: 0.88092995, z: 0.22050178}
     mesh: {fileID: 4698152120088058464, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
     quality: 0
-    staticLocalBounds:
-      m_Center: {x: 0.071128994, y: 0.7336631, z: -0.05046442}
-      m_Extent: {x: 0.5675932, y: 1.2068417, z: 0.8133646}
-  staticBounds: 0
   lodBounds:
-    m_Center: {x: 0.071128994, y: 0.7336631, z: -0.05046442}
-    m_Extent: {x: 0.5675932, y: 1.2068417, z: 0.8133646}
-  boundsCalculated: 1
+    m_Center: {x: 0, y: 0.888956, z: 0.03278037}
+    m_Extent: {x: 0.5181477, y: 0.88093, z: 0.19170997}
+  boundsSource: 2
   lodEnabled: 1
   lodCamera: {fileID: 0}
+  lodEvaluationInterval: 4
   lodRatios:
-  - 0.5
-  - 0.2
+  - 0.3
+  - 0.15
   baseInterval: 0
   invisibleInterval: 4
   lodIntervals: 0200000004000000

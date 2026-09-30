@@ -1,7 +1,7 @@
 using System.Text;
 using UnityEngine;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// HUD 文字列を GC Alloc なしで組み立てるための補助。

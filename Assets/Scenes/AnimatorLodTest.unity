@@ -527,7 +527,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: da58ff1e67dfd7c43931d74e3865ce31, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.CrowdMover
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.CrowdMover
   spawner: {fileID: 1699661482}
   move: 0
   radius: 5
@@ -543,7 +543,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 422ca56d23e79004592d847336a82df0, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.HumanoidSpawner
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.HumanoidSpawner
   sourcePrefab: {fileID: 7896358932102234693, guid: d9995484ce211964484fc743522df43a, type: 3}
   optimizedPrefab: {fileID: 4005881986290037453, guid: 39251237dd3265444b446e6f620c7a08, type: 3}
   useOptimizedRig: 0
@@ -583,7 +583,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 8ed77f4d3c835b046999947eff27ce34, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.LodPerformanceHud
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.LodPerformanceHud
   spawner: {fileID: 1699661482}
   panel: {fileID: 1699661485}
   mover: {fileID: 1699661480}
@@ -600,7 +600,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 32e59695e48258246a85909df65102ce, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.LodControlPanel
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.LodControlPanel
   spawner: {fileID: 1699661482}
   mover: {fileID: 1699661480}
 --- !u!1660057539 &9223372036854775807

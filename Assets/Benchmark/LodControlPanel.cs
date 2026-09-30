@@ -1,11 +1,11 @@
 using UnityEngine;
 using UnityEngine.UI;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// AnimatorLod 検証シーン用の簡易 uGUI パネル(画面右上に動的生成)。
-    /// 体数・CullingMode に加え、全個体の Static Bounds / Animation LOD を一括トグルする。
+    /// 体数・CullingMode に加え、全個体の Animation LOD を一括トグルする。
     /// Respawn 後もトグル状態を再適用する。
     /// </summary>
     public sealed class LodControlPanel : MonoBehaviour
@@ -25,7 +25,6 @@ namespace AnimatorStressTest
         private Font _font;
         private Text _countLabel;
         private Text _cullingButtonLabel;
-        private Text _boundsButtonLabel;
         private Text _lodButtonLabel;
         private Text _rigButtonLabel;
         private Text _moveButtonLabel;
@@ -39,13 +38,11 @@ namespace AnimatorStressTest
         private Text _skinWeightsButtonLabel;
 
         // null = プレハブ既定値のまま(まだ操作していない)
-        private bool? _staticBounds;
         private bool? _lodEnabled;
         private bool? _meshLod;
         private bool? _skinWeights;
         private int? _baseInterval;
 
-        public bool StaticBounds => _staticBounds ?? FirstOptimizer()?.StaticBounds ?? false;
         public bool LodEnabled => _lodEnabled ?? FirstOptimizer()?.LodEnabled ?? false;
         public bool MeshLodEnabled => _meshLod ?? FirstOptimizer()?.MeshLodEnabled ?? false;
         public bool SkinWeightsLodEnabled => _skinWeights ?? FirstOptimizer()?.SkinWeightsLodEnabled ?? false;
@@ -110,10 +107,6 @@ namespace AnimatorStressTest
 
         private void OnRespawned()
         {
-            if (_staticBounds.HasValue)
-            {
-                ApplyStaticBounds(_staticBounds.Value);
-            }
             if (_lodEnabled.HasValue)
             {
                 ApplyLod(_lodEnabled.Value);
@@ -160,18 +153,6 @@ namespace AnimatorStressTest
                 }
             }
             return null;
-        }
-
-        private void ApplyStaticBounds(bool enable)
-        {
-            var list = spawner.Spawned;
-            for (int i = 0; i < list.Count; i++)
-            {
-                if (list[i] != null && list[i].TryGetComponent<AnimatorLod>(out var opt))
-                {
-                    opt.SetStaticBounds(enable);
-                }
-            }
         }
 
         private void ApplyLod(bool enable)
@@ -231,7 +212,6 @@ namespace AnimatorStressTest
 
             // ---- シーン固有: AnimatorLod ----
             ControlPanelUi.CreateSpacer(panel);
-            _boundsButtonLabel = ControlPanelUi.CreateButton(panel, _font, BoundsLabel(), ToggleStaticBounds);
             _lodButtonLabel = ControlPanelUi.CreateButton(panel, _font, LodLabel(), ToggleLod);
             _baseIntervalLabel = ControlPanelUi.CreateLabelBox(panel, _font, BaseIntervalLabel());
             ControlPanelUi.CreateButton(panel, _font, "Base Interval -", () => SetBaseInterval(BaseInterval - 1));
@@ -244,17 +224,6 @@ namespace AnimatorStressTest
             _rigButtonLabel = ControlPanelUi.CreateButton(panel, _font, RigLabel(), ToggleRig);
             _moveButtonLabel = ControlPanelUi.CreateButton(panel, _font, MoveLabel(), ToggleMove);
             _pingPongButtonLabel = ControlPanelUi.CreateButton(panel, _font, PingPongLabel(), TogglePingPong);
-        }
-
-        private void ToggleStaticBounds()
-        {
-            if (spawner == null)
-            {
-                return;
-            }
-            _staticBounds = !StaticBounds;
-            ApplyStaticBounds(_staticBounds.Value);
-            RefreshLabels();
         }
 
         private void ToggleLod()
@@ -325,7 +294,6 @@ namespace AnimatorStressTest
 
         private void RefreshLabels()
         {
-            if (_boundsButtonLabel != null) _boundsButtonLabel.text = BoundsLabel();
             if (_lodButtonLabel != null) _lodButtonLabel.text = LodLabel();
             if (_meshLodButtonLabel != null) _meshLodButtonLabel.text = MeshLodLabel();
             if (_skinWeightsButtonLabel != null) _skinWeightsButtonLabel.text = SkinWeightsLabel();
@@ -336,7 +304,6 @@ namespace AnimatorStressTest
             if (_cullingButtonLabel != null) _cullingButtonLabel.text = CullingLabel();
         }
 
-        private string BoundsLabel() => "Static Bounds: " + OnOff(StaticBounds);
         private string LodLabel() => "Anim LOD: " + OnOff(LodEnabled);
         private string MeshLodLabel() => "Mesh LOD: " + OnOff(MeshLodEnabled);
         private string SkinWeightsLabel() => "Skin Weights LOD: " + OnOff(SkinWeightsLodEnabled);

@@ -84,7 +84,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e59a1a2e504e7434c87f1eab0ba1bfdb, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::AnimatorStressTest.AnimatorLod
+  m_EditorClassIdentifier: Assembly-CSharp::AnimatorLodTest.AnimatorLod
   animator: {fileID: 7655059477505880589}
   renderers:
   - renderer: {fileID: 6163561852628378184}
@@ -92,25 +92,18 @@ MonoBehaviour:
     - {fileID: 0}
     - {fileID: 4300000, guid: 69d02037f87d61d42ab5df84be10b63b, type: 2}
     - {fileID: 4300000, guid: 4c6377e8595d4524aa3b636045dd39f4, type: 2}
-    rootBone: {fileID: 0}
-    localBounds:
-      m_Center: {x: 0, y: -0.09214255, z: 0.026248671}
-      m_Extent: {x: 0.52818465, y: 0.88092995, z: 0.22050178}
     mesh: {fileID: 4698152120088058464, guid: d85a4bf56b95b8a46a224d24397c13c7, type: 3}
     quality: 0
-    staticLocalBounds:
-      m_Center: {x: 0.071128994, y: -0.24743551, z: -0.034559872}
-      m_Extent: {x: 0.5675932, y: 1.2068417, z: 0.8133646}
-  staticBounds: 0
   lodBounds:
-    m_Center: {x: 0.071128994, y: 0.7336631, z: -0.05046442}
-    m_Extent: {x: 0.5675932, y: 1.2068417, z: 0.8133646}
-  boundsCalculated: 1
+    m_Center: {x: 0, y: 0.888956, z: 0.03278037}
+    m_Extent: {x: 0.5181477, y: 0.88093, z: 0.19170997}
+  boundsSource: 2
   lodEnabled: 1
   lodCamera: {fileID: 0}
+  lodEvaluationInterval: 4
   lodRatios:
-  - 0.5
-  - 0.2
+  - 0.3
+  - 0.15
   baseInterval: 0
   invisibleInterval: 4
   lodIntervals: 0200000004000000

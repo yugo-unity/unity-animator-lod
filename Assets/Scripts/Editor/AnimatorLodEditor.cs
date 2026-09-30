@@ -2,11 +2,11 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
-namespace AnimatorStressTest.Editor
+namespace AnimatorLodTest.Editor
 {
     /// <summary>
     /// AnimatorLod の Inspector。
-    /// References(表示のみ)/ Static Bounds / LOD の 3 バンド。LOD バンドは共通の LOD 境界
+    /// References(表示のみ)/ LOD の 2 バンド。LOD バンドは共通の LOD 境界
     /// (Ratios バー・Transition・Culled)と、それを使う Animation LOD / Mesh LOD / Skin Weights のサブバンドで構成する。
     /// 各項目の詳細は README.md を参照。
     ///
@@ -30,24 +30,32 @@ namespace AnimatorStressTest.Editor
         private const string SkinWeightsKey = "AnimatorLod.DynamicSkinWeights";
 
         // ---- 固定ラベル ----
-        private static readonly GUIContent AnimatorLabel = new GUIContent("Animator", "Target Animator. Empty = Animator on this GameObject.");
-        private static readonly GUIContent RenderersLabel = new GUIContent("Skinned Mesh Renderers", "Target renderers. Empty = all children.");
+        private static readonly GUIContent AnimatorLabel = new GUIContent("Animator", "Animator on this GameObject. Read-only; fetched when the component is attached and by Refresh References.");
+        private static readonly GUIContent RenderersLabel = new GUIContent("Skinned Mesh Renderers", "All child SkinnedMeshRenderers, including inactive ones. Read-only; fetched when the component is attached and by Refresh References.");
         private static readonly GUIContent RefreshReferencesLabel = new GUIContent("Refresh References", "Fetch the Animator and child SkinnedMeshRenderers again.");
-        private static readonly GUIContent BoundsLabel = new GUIContent("Bounds", "AABB in this transform's local space. Used for LOD, and as fixed bounds when Static Bounds is on.");
-        private static readonly GUIContent StaticBoundsLabel = new GUIContent("Static Bounds", "Use Bounds as the renderers' fixed local bounds instead of per-frame bone bounds.");
+        private static readonly GUIContent BoundsLabel = new GUIContent("Bounds", "AABB in this transform's local space. Used as the bounding sphere for LOD.");
         private static readonly GUIContent RatiosLabel = new GUIContent("Ratios", "Screen-size ratio per LOD (left 100%, right 0%). Drag the boundaries to edit.");
         private static readonly GUIContent CulledLabel = new GUIContent("Culled (% Screen Size)", "Below this ratio the Invisible Interval applies. 0 = off.");
-        private static readonly GUIContent AnimationLodEnabledLabel = new GUIContent("Enabled", "Evaluate LOD every frame. Mesh LOD and Skin Weights also require this.");
+        private static readonly GUIContent AnimationLodEnabledLabel = new GUIContent("Enabled", "Throttle the Animator update per LOD. Mesh LOD and Skin Weights work without this.");
         private static readonly GUIContent LodCameraLabel = new GUIContent("LOD Camera", "Camera for the screen-size ratio. Empty = Camera.main.");
         private static readonly GUIContent BaseIntervalLabel = new GUIContent("Base Interval", "Animator update interval (frames) added to every LOD. 0/1 = every frame.");
         private static readonly GUIContent InvisibleIntervalLabel = new GUIContent("Invisible Interval", "Interval used when not visible or culled. Overrides LOD and Base.");
         private static readonly GUIContent MeshLodEnabledLabel = new GUIContent("Enabled", "Swap SkinnedMeshRenderer.sharedMesh to a reduced mesh per LOD.");
         private static readonly GUIContent SkinWeightsEnabledLabel = new GUIContent("Enabled", "Switch SkinnedMeshRenderer.quality (bones per vertex) per LOD.");
+        private static readonly GUIContent LodEvaluationIntervalLabel = new GUIContent("LOD Evaluation Interval",
+            "Evaluate LOD for Mesh LOD and Skin Weights every N frames (spread across instances). 1 = every frame. " +
+            "Not used while Animation LOD is enabled: LOD is then evaluated on the frames the Animator is updated.");
         private static readonly GUIContent EmptyListLabel = new GUIContent("(empty)");
 
+        private static readonly GUIContent CalculateFromClipsLabel = new GUIContent("Calculate from All Clips",
+            "Sample every clip of the Animator Controller and measure Bounds that contain every pose.");
+        private static readonly GUIContent CalculateFromDefaultPoseLabel = new GUIContent("Calculate from Default Pose",
+            "Measure Bounds from the default pose (no animation applied).");
+
         private const string StatusMixed = "(mixed)";
-        private const string StatusCalculated = "Calculated from all clips";
-        private const string StatusNotCalculated = "Not calculated from clips";
+        private const string StatusAllClips = "Calculated from all clips";
+        private const string StatusDefaultPose = "Calculated from default pose";
+        private const string StatusRenderers = "Taken from renderer bounds";
         private static readonly GUIContent s_intervalRowLabel = new GUIContent(string.Empty, "Interval (frames) added to Base Interval for this LOD.");
 
         // ---- 番号付きラベル(index ごとに 1 度だけ作る) ----
@@ -67,8 +75,7 @@ namespace AnimatorStressTest.Editor
         private SerializedProperty _animator;
         private SerializedProperty _renderers;
         private SerializedProperty _lodBounds;
-        private SerializedProperty _boundsCalculated;
-        private SerializedProperty _staticBounds;
+        private SerializedProperty _boundsSource;
         private SerializedProperty _lodEnabled;
         private SerializedProperty _lodCamera;
         private SerializedProperty _lodRatios;
@@ -77,6 +84,7 @@ namespace AnimatorStressTest.Editor
         private SerializedProperty _lodIntervals;
         private SerializedProperty _cullRatio;
         private SerializedProperty _meshLodEnabled;
+        private SerializedProperty _lodEvaluationInterval;
         private SerializedProperty _skinWeightsLodEnabled;
         private SerializedProperty _lodSkinQualities;
 
@@ -91,8 +99,7 @@ namespace AnimatorStressTest.Editor
             _animator = serializedObject.FindProperty("animator");
             _renderers = serializedObject.FindProperty("renderers");
             _lodBounds = serializedObject.FindProperty("lodBounds");
-            _boundsCalculated = serializedObject.FindProperty("boundsCalculated");
-            _staticBounds = serializedObject.FindProperty("staticBounds");
+            _boundsSource = serializedObject.FindProperty("boundsSource");
             _lodEnabled = serializedObject.FindProperty("lodEnabled");
             _lodCamera = serializedObject.FindProperty("lodCamera");
             _lodRatios = serializedObject.FindProperty("lodRatios");
@@ -101,6 +108,7 @@ namespace AnimatorStressTest.Editor
             _lodIntervals = serializedObject.FindProperty("lodIntervals");
             _cullRatio = serializedObject.FindProperty("cullRatio");
             _meshLodEnabled = serializedObject.FindProperty("meshLodEnabled");
+            _lodEvaluationInterval = serializedObject.FindProperty("lodEvaluationInterval");
             _skinWeightsLodEnabled = serializedObject.FindProperty("skinWeightsLodEnabled");
             _lodSkinQualities = serializedObject.FindProperty("lodSkinQualities");
 
@@ -121,7 +129,7 @@ namespace AnimatorStressTest.Editor
             serializedObject.ApplyModifiedProperties();
         }
 
-        /// <summary>LOD バンド: Bounds(と Static Bounds)→ 共通の LOD 境界 → Animation LOD / Mesh LOD / Skin Weights。</summary>
+        /// <summary>LOD バンド: Bounds → 共通の LOD 境界 → Animation LOD / Mesh LOD / Skin Weights。</summary>
         private void DrawLodGroup()
         {
             DrawBoundsSection();
@@ -147,6 +155,15 @@ namespace AnimatorStressTest.Editor
             int boundaryCount = ratios.arraySize;
             // 境界のクランプ用にイベント開始時点の値を控える(バーと各行で共用)
             var current = Snapshot(ratios);
+
+            // LOD Camera は Animation LOD / Mesh LOD / Skin Weights で共通の LOD 判定に使う
+            EditorGUILayout.PropertyField(_lodCamera, LodCameraLabel);
+            // Mesh LOD / Skin Weights 用の判定間隔。Animation LOD が有効な間(評価フレームで判定する)と、
+            // Mesh LOD / Skin Weights がともに無効な間は参照されないのでグレーアウトする
+            using (new EditorGUI.DisabledScope(IsAllOn(_lodEnabled) || (IsAllOff(_meshLodEnabled) && IsAllOff(_skinWeightsLodEnabled))))
+            {
+                EditorGUILayout.IntSlider(_lodEvaluationInterval, 1, AnimatorLod.MaxLodEvaluationInterval, LodEvaluationIntervalLabel);
+            }
 
             Rect barRect = EditorGUILayout.GetControlRect(true, BarHeight);
             barRect = EditorGUI.PrefixLabel(barRect, RatiosLabel);
@@ -205,8 +222,14 @@ namespace AnimatorStressTest.Editor
         private static EditorGUI.DisabledScope DrawEnabledToggle(SerializedProperty enabled, GUIContent label)
         {
             EditorGUILayout.PropertyField(enabled, label);
-            return new EditorGUI.DisabledScope(!enabled.hasMultipleDifferentValues && !enabled.boolValue);
+            return new EditorGUI.DisabledScope(IsAllOff(enabled));
         }
+
+        /// <summary>選択中の全コンポーネントで false か(値が混在していれば false)。</summary>
+        private static bool IsAllOff(SerializedProperty flag) => !flag.hasMultipleDifferentValues && !flag.boolValue;
+
+        /// <summary>選択中の全コンポーネントで true か(値が混在していれば false)。</summary>
+        private static bool IsAllOn(SerializedProperty flag) => !flag.hasMultipleDifferentValues && flag.boolValue;
 
         // ---- Scene View: 選択中個体の LOD 表示 ----
 
@@ -224,7 +247,15 @@ namespace AnimatorStressTest.Editor
             }
 
             var lod = (AnimatorLod)target;
-            if (lod == null || !lod.isActiveAndEnabled)
+            if (lod == null)
+            {
+                return;
+            }
+
+            // Bounds は設定値なので、コンポーネントが無効でも表示する
+            DrawLodBounds(lod);
+
+            if (!lod.isActiveAndEnabled)
             {
                 return;
             }
@@ -246,13 +277,15 @@ namespace AnimatorStressTest.Editor
             string source;
             string detail = null;
 
-            if (Application.isPlaying && lod.LodEnabled)
+            if (Application.isPlaying && (lod.LodEnabled || lod.MeshLodEnabled || lod.SkinWeightsLodEnabled))
             {
                 level = lod.CurrentLod;
                 ratio = lod.CurrentScreenRatio;
                 source = "runtime";
                 var smr = FirstRenderer(lod);
-                detail = $"Interval {lod.CurrentInterval}  Bucket {lod.CurrentBucket}  {(lod.IsInvisible ? "Invisible" : "Visible")}";
+                detail = lod.LodEnabled
+                    ? $"Interval {lod.CurrentInterval}  Bucket {lod.CurrentBucket}  {(lod.IsInvisible ? "Invisible" : "Visible")}"
+                    : "Animation LOD off (every frame)";
                 if (smr != null && (lod.MeshLodEnabled || lod.SkinWeightsLodEnabled))
                 {
                     int verts = smr.sharedMesh != null ? smr.sharedMesh.vertexCount : 0;
@@ -317,6 +350,47 @@ namespace AnimatorStressTest.Editor
             {
                 sceneView.Repaint();
             }
+        }
+
+        private static readonly Color BoundsBoxColor = new Color(1f, 0.85f, 0.2f, 0.9f);
+        private static readonly Color BoundsSphereColor = new Color(0.3f, 0.85f, 1f, 0.6f);
+        private static readonly Color BoundsOutlineColor = new Color(0.3f, 0.85f, 1f, 1f);
+
+        /// <summary>
+        /// LOD 判定に使う Bounds を描く。AABB(このコンポーネントのローカル空間)と、
+        /// 実際に Screen Size 比の計算に使う外接球(3 軸の円 + 視線に垂直な輪郭円)。
+        /// </summary>
+        private static void DrawLodBounds(AnimatorLod lod)
+        {
+            var b = lod.LodBounds;
+            var prevMatrix = Handles.matrix;
+            var prevColor = Handles.color;
+
+            Handles.matrix = lod.transform.localToWorldMatrix;
+            Handles.color = BoundsBoxColor;
+            Handles.DrawWireCube(b.center, b.size);
+
+            Handles.matrix = Matrix4x4.identity;
+            lod.EditorGetLodSphere(out var center, out float radius);
+            Handles.color = BoundsSphereColor;
+            Handles.DrawWireDisc(center, Vector3.right, radius);
+            Handles.DrawWireDisc(center, Vector3.up, radius);
+            Handles.DrawWireDisc(center, Vector3.forward, radius);
+
+            var cam = Camera.current;
+            if (cam != null)
+            {
+                var ct = cam.transform;
+                var normal = cam.orthographic ? ct.forward : center - ct.position;
+                if (normal.sqrMagnitude > 1e-8f)
+                {
+                    Handles.color = BoundsOutlineColor;
+                    Handles.DrawWireDisc(center, normal, radius, 2f);
+                }
+            }
+
+            Handles.matrix = prevMatrix;
+            Handles.color = prevColor;
         }
 
         /// <summary>References の最初の有効な SMR(Scene View の Mesh / Skin Weights 表示用)。</summary>
@@ -526,35 +600,52 @@ namespace AnimatorStressTest.Editor
             EditorGUI.indentLevel--;
         }
 
-        // ---- Bounds / Static Bounds(LOD バンド内、Ratios の上) ----
+        // ---- Bounds(LOD バンド内、Ratios の上) ----
 
         /// <summary>
-        /// Bounds は LOD 判定の外接球として常に使う。Static Bounds はその Bounds を SMR の固定 localBounds として与える機能のみ。
+        /// Bounds は LOD 判定の外接球として使う。
         /// </summary>
         private void DrawBoundsSection()
         {
             EditorGUILayout.PropertyField(_lodBounds, BoundsLabel);
 
-            var calculated = _boundsCalculated;
-            string status = calculated.hasMultipleDifferentValues
+            var source = _boundsSource;
+            string status = source.hasMultipleDifferentValues
                 ? StatusMixed
-                : calculated.boolValue ? StatusCalculated : StatusNotCalculated;
+                : BoundsStatus((AnimatorLod.BoundsSource)source.intValue);
             EditorGUILayout.LabelField("Status", status);
 
             using (new EditorGUI.DisabledScope(Application.isPlaying))
+            using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Calculate Bounding"))
+                if (GUILayout.Button(CalculateFromClipsLabel))
                 {
-                    foreach (var t in targets)
-                    {
-                        AnimatorLodBoundsCalculator.Apply((AnimatorLod)t, true);
-                    }
-                    serializedObject.Update();
+                    ApplyBounds(AnimatorLod.BoundsSource.AllClips);
+                }
+                if (GUILayout.Button(CalculateFromDefaultPoseLabel))
+                {
+                    ApplyBounds(AnimatorLod.BoundsSource.DefaultPose);
                 }
             }
+        }
 
-            // Static Bounds は Ratios の直上
-            EditorGUILayout.PropertyField(_staticBounds, StaticBoundsLabel);
+        private void ApplyBounds(AnimatorLod.BoundsSource mode)
+        {
+            foreach (var t in targets)
+            {
+                AnimatorLodBoundsCalculator.Apply((AnimatorLod)t, mode, true);
+            }
+            serializedObject.Update();
+        }
+
+        private static string BoundsStatus(AnimatorLod.BoundsSource source)
+        {
+            switch (source)
+            {
+                case AnimatorLod.BoundsSource.AllClips: return StatusAllClips;
+                case AnimatorLod.BoundsSource.DefaultPose: return StatusDefaultPose;
+                default: return StatusRenderers;
+            }
         }
 
         // ---- Animation LOD ----
@@ -562,7 +653,6 @@ namespace AnimatorStressTest.Editor
         private void DrawLodSection()
         {
             using var _ = DrawEnabledToggle(_lodEnabled, AnimationLodEnabledLabel);
-            EditorGUILayout.PropertyField(_lodCamera, LodCameraLabel);
 
             var intervals = _lodIntervals;
             var baseInterval = _baseInterval;

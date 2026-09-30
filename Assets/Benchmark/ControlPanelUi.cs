@@ -3,7 +3,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// 検証シーン共通の右上 uGUI パネル生成ヘルパー。

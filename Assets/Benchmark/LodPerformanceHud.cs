@@ -1,11 +1,11 @@
 using System.Text;
 using UnityEngine;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// AnimatorLod 検証シーン用 HUD(画面左上、IMGUI 表示のみ)。
-    /// FPS / フレーム時間 / 体数 / CullingMode に加え、Static Bounds・LOD の状態と
+    /// FPS / フレーム時間 / 体数 / CullingMode に加え、LOD の状態と
     /// LOD 別の個体数を表示する。
     /// </summary>
     public sealed class LodPerformanceHud : MonoBehaviour
@@ -104,7 +104,6 @@ namespace AnimatorStressTest
             string culling = spawner != null ? HudText.CullingModeName(spawner.CullingMode) : "-";
             string rig = spawner != null && spawner.UseOptimizedRig ? "Optimized" : "Normal";
             string moving = HudText.OnOff(mover != null && mover.Move);
-            string staticBounds = panel != null ? HudText.OnOff(panel.StaticBounds) : "-";
             string lod = panel != null ? HudText.OnOff(panel.LodEnabled) : "-";
 
             _sb.Clear();
@@ -118,7 +117,7 @@ namespace AnimatorStressTest
             _sb.Append(" ms\n");
             _sb.Append("Animators: ").Append(count).Append("  Rig: ").Append(rig).Append("  Move: ").Append(moving).Append('\n');
             _sb.Append("CullingMode: ").Append(culling).Append('\n');
-            _sb.Append("Static Bounds: ").Append(staticBounds).Append("  Anim LOD: ").Append(lod);
+            _sb.Append("Anim LOD: ").Append(lod);
             if (panel != null)
             {
                 _sb.Append("  Base Interval: ").Append(panel.BaseInterval);

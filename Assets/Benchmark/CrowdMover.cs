@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// RootNode をアニメーション外のスクリプトで Transform 移動させる前提を再現する。

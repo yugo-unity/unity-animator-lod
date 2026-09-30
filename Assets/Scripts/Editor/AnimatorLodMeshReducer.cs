@@ -4,7 +4,7 @@ using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 
-namespace AnimatorStressTest.Editor
+namespace AnimatorLodTest.Editor
 {
     /// <summary>
     /// AnimatorLod 配下の SkinnedMeshRenderer の sharedMesh から、LOD level ごとに頂点数を削った独立 Mesh を生成する。
@@ -93,6 +93,11 @@ namespace AnimatorStressTest.Editor
                         {
                             target = new Mesh();
                         }
+                        else
+                        {
+                            // 前回の生成で Read/Write を無効にしているので、書き込む間だけ戻す
+                            SetReadable(target, true);
+                        }
                         ExtractLevel(work, sourceAttributes, genLevel, target);
                         // アセットのメインオブジェクト名はファイル名と一致させる(不一致だと Import 時に警告)
                         target.name = Path.GetFileNameWithoutExtension(path);
@@ -105,6 +110,9 @@ namespace AnimatorStressTest.Editor
                         {
                             EditorUtility.SetDirty(target);
                         }
+                        // スクリプトで作った Mesh は Read/Write が有効なので、Player でメインメモリに複製を残さないよう無効にする
+                        // (GPU スキニングのボーンウェイトは isReadable が false でも GPU バッファから使える)
+                        SetReadable(target, false);
 
                         lodMeshes[level] = target;
                         sb.Append(" LOD").Append(level).Append(" verts=").Append(target.vertexCount)
@@ -135,6 +143,20 @@ namespace AnimatorStressTest.Editor
 
             report = sb.ToString().TrimEnd();
             return generatedCount > 0;
+        }
+
+        /// <summary>Mesh アセットの Read/Write(m_IsReadable)を設定する。スクリプトからは isReadable を書けないためシリアライズ値を直接書き換える。</summary>
+        private static void SetReadable(Mesh mesh, bool readable)
+        {
+            using (var so = new SerializedObject(mesh))
+            {
+                var prop = so.FindProperty("m_IsReadable");
+                if (prop.boolValue != readable)
+                {
+                    prop.boolValue = readable;
+                    so.ApplyModifiedPropertiesWithoutUndo();
+                }
+            }
         }
 
         /// <summary>三角形数。triangles プロパティは index 配列を丸ごと確保するため、サブメッシュの index 数から求める。</summary>

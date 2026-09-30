@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.LowLevel;
 using UnityEngine.PlayerLoop;
 
-namespace AnimatorStressTest
+namespace AnimatorLodTest
 {
     /// <summary>
     /// 登録された全 <see cref="AnimatorLod"/> の LOD 判定・可視判定・更新間隔の決定と Animator の切替を 1 か所で行う静的クラス。
@@ -26,6 +26,9 @@ namespace AnimatorStressTest
             public int Interval;
             public int Bucket;
             public int LastEvaluatedFrame;
+            /// <summary>最後に評価したフレームの Time.timeAsDouble / unscaledTimeAsDouble(Update Mode に合わせて片方を使う)。</summary>
+            public double LastEvaluatedTime;
+            public double LastEvaluatedUnscaledTime;
             /// <summary>登録後まだ評価していない(初回はバケットに関わらず評価する)。</summary>
             public bool FirstEvaluationPending;
             /// <summary>最後に設定した Animator.speed。NaN は未設定。</summary>
@@ -36,13 +39,32 @@ namespace AnimatorStressTest
             public static InstanceSchedule Unregistered => new InstanceSchedule { Index = -1 };
         }
 
+        /// <summary>
+        /// 温めた Mesh の記録。Mesh は弱参照で持つ。static から強参照すると Resources.UnloadUnusedAssets が
+        /// 使用中とみなし、キャラクターが居なくなっても Mesh(と GPU バッファ)がアンロードされないため。
+        /// </summary>
+        private sealed class WarmedMesh
+        {
+            public readonly System.WeakReference<Mesh> Mesh;
+            /// <summary>温めた Skin Weights のビットマスク(<see cref="SkinWeightsBit"/>)。</summary>
+            public int Bits;
+
+            public WarmedMesh(Mesh mesh)
+            {
+                Mesh = new System.WeakReference<Mesh>(mesh);
+            }
+
+            /// <summary>記録した Mesh がまだ読み込まれているか(アンロード・破棄済み、または C# 側が回収済みなら false)。</summary>
+            public bool IsAlive(out Mesh mesh) => Mesh.TryGetTarget(out mesh) && mesh != null;
+        }
+
         /// <summary>Play 単位の状態(作り直すとリセットされる)。</summary>
         private sealed class State
         {
             public readonly List<AnimatorLod> Instances = new List<AnimatorLod>(1024);
             public readonly int[][] BucketCounts = CreateBucketCounts();
-            /// <summary>Mesh ごとに温めた Skin Weights のビットマスク(1 &lt;&lt; SkinQuality)。</summary>
-            public readonly Dictionary<Mesh, int> WarmedSkinWeights = new Dictionary<Mesh, int>();
+            /// <summary>Mesh の instance ID ごとに温めた Skin Weights(<see cref="WarmedMesh"/>)。</summary>
+            public readonly Dictionary<int, WarmedMesh> WarmedSkinWeights = new Dictionary<int, WarmedMesh>();
             public int LastTickFrame = -1;
             // Transform のマネージドラッパーを強参照で保持し、cam.transform 経由の散発的な GC.Alloc(ラッパー再生成)を避ける
             public Camera MainCamera;
@@ -57,6 +79,11 @@ namespace AnimatorStressTest
         private struct TickContext
         {
             public int Frame;
+            // Tick ごとに 1 回だけ読む時刻(個体ごとに読むとネイティブ呼び出しが個体数ぶん増える)
+            public double Now;
+            public double UnscaledNow;
+            public float DeltaTime;
+            public float UnscaledDeltaTime;
             public AnimatorLod.LodView MainView;
             // 直前の個体の LodCamera とその LodView(同じカメラが続く間は計算を使い回す)
             public Camera LodCamera;
@@ -66,7 +93,6 @@ namespace AnimatorStressTest
         private static State s_state = new State();
         // 以下は Play 単位ではなく、PlayerLoop / Editor に残るオブジェクトの状態を映す
         private static bool s_loopInstalled;
-        private static Mesh s_bakeScratch;
 
         /// <summary>登録中の全個体。Play をまたいで保持しないこと。</summary>
         public static IReadOnlyList<AnimatorLod> Instances => s_state.Instances;
@@ -111,12 +137,6 @@ namespace AnimatorStressTest
             {
                 RemovePlayerLoop();
                 ResetState();
-                // HideAndDontSave はドメインリロードを越えて残るが static の参照は失われるため、Play ごとに破棄する
-                if (s_bakeScratch != null)
-                {
-                    Object.DestroyImmediate(s_bakeScratch);
-                    s_bakeScratch = null;
-                }
             }
         }
 #endif
@@ -238,6 +258,8 @@ namespace AnimatorStressTest
             {
                 Index = instances.Count,
                 LastEvaluatedFrame = Time.frameCount,
+                LastEvaluatedTime = Time.timeAsDouble,
+                LastEvaluatedUnscaledTime = Time.unscaledTimeAsDouble,
                 FirstEvaluationPending = true,
                 AppliedSpeed = float.NaN,
                 AppliedEnabled = animator.enabled,
@@ -250,7 +272,7 @@ namespace AnimatorStressTest
             {
                 state.FixedUpdateModeWarned = true;
                 Debug.LogWarning($"[AnimatorLod] '{optimizer.name}': Animator Update Mode 'Fixed' (Animate Physics) is not supported. " +
-                                 "The Animator is evaluated in FixedUpdate, so the frame-based interval and speed compensation drift. " +
+                                 "The Animator is evaluated in FixedUpdate, so the per-frame throttling and speed compensation do not match it. " +
                                  "Use Normal or Unscaled Time. (Logged once per Play; other instances may also be affected.)", optimizer);
             }
             // 通常は ResetStatics で挿入済みで何もしない。static が初期化された場合(Play 中のスクリプト再コンパイル等)に挿入し直す
@@ -305,13 +327,21 @@ namespace AnimatorStressTest
             }
             state.LastTickFrame = frame;
 
-            var ctx = new TickContext { Frame = frame, MainView = UpdateMainCamera(state) };
+            var ctx = new TickContext
+            {
+                Frame = frame,
+                Now = Time.timeAsDouble,
+                UnscaledNow = Time.unscaledTimeAsDouble,
+                DeltaTime = Time.deltaTime,
+                UnscaledDeltaTime = Time.unscaledDeltaTime,
+                MainView = UpdateMainCamera(state),
+            };
             int invisible = 0;
             int enabledCount = 0;
             for (int i = 0; i < instances.Count; i++)
             {
                 var opt = instances[i];
-                if (UpdateInstance(opt, ref ctx))
+                if (UpdateInstance(opt, i, ref ctx))
                 {
                     enabledCount++;
                 }
@@ -326,7 +356,7 @@ namespace AnimatorStressTest
         }
 
         /// <summary>1 個体の LOD・可視・Interval を判定して Animator を切り替える。このフレームに評価させたら true。</summary>
-        private static bool UpdateInstance(AnimatorLod opt, ref TickContext ctx)
+        private static bool UpdateInstance(AnimatorLod opt, int index, ref TickContext ctx)
         {
             int frame = ctx.Frame;
 
@@ -334,25 +364,45 @@ namespace AnimatorStressTest
             opt.EditorApplyInspectorChanges();
 #endif
 
+            bool lodActive = opt.LodEnabled || opt.MeshLodEnabled || opt.SkinWeightsLodEnabled;
+            // 設定の変更後は間引きの位相に関わらず次の Tick で LOD を引き直す
+            bool lodRefresh = opt.ConsumeLodRefresh();
+            if (!lodActive && opt.HasLodState)
+            {
+                opt.ResetRuntimeState();
+            }
+
             if (!opt.LodEnabled)
             {
-                if (opt.HasLodState)
+                // Animation LOD が無効なら間引かず毎フレーム評価する。
+                // Mesh LOD / Skin Weights の LOD 判定は LodEvaluationInterval フレームに 1 回へ分散する(切替は最大でその分遅れる)
+                if (lodActive && (lodRefresh || !opt.HasEvaluatedLod || (frame + index) % opt.LodEvaluationInterval == 0))
                 {
-                    opt.ResetRuntimeState();
+                    opt.EvaluateLod(ResolveView(opt, ref ctx));
                 }
+                opt.IsInvisible = false;
+                opt.CurrentInterval = 0;
                 // 毎フレーム評価するので即時評価要求は不要。残すと LOD を有効に戻したときに不要な強制評価になる
                 opt.ConsumeImmediateRequest();
                 ReleaseBucket(opt);
-                EvaluateThisFrame(opt, frame);
+                EvaluateThisFrame(opt, ctx);
                 return true;
             }
 
-            // 1. Screen Size 比 → LOD / 比率カリング
-            opt.EvaluateLod(ResolveView(opt, ref ctx));
-
-            // 2. 可視判定(Renderer.isVisible。Animator のカリングと同じ可視判定)
+            // 1. 可視判定(Renderer.isVisible。Animator のカリングと同じ可視判定)。軽いので毎フレーム行い、画面に入った個体をすぐ起こす
             bool visible = opt.ComputeVisible();
+            bool visibilityChanged = visible == opt.IsInvisible;
             opt.IsInvisible = !visible;
+            bool immediate = opt.ConsumeImmediateRequest();
+
+            // 2. Screen Size 比 → LOD / 比率カリング。Animator を評価するフレームだけ引き直す
+            //    (評価するかは前回の Interval とバケットで決まる。間引き中の LOD の変化は次の評価フレームで反映され、最大 Interval フレーム遅れる)
+            ref var schedule = ref opt.Schedule;
+            if (lodRefresh || immediate || visibilityChanged || !opt.HasEvaluatedLod
+                || schedule.FirstEvaluationPending || schedule.Interval <= 1 || frame % schedule.Interval == schedule.Bucket)
+            {
+                opt.EvaluateLod(ResolveView(opt, ref ctx));
+            }
 
             // 3. Interval 決定: 不可視、または Culled 比率未満(LOD カリング)は Invisible Interval を絶対値で適用
             int interval = visible && !opt.IsCulled
@@ -362,7 +412,7 @@ namespace AnimatorStressTest
             opt.CurrentInterval = interval;
 
             // 4. 即時評価要求: 評価したフレームを以降の間引き位相の起点にする
-            if (opt.ConsumeImmediateRequest())
+            if (immediate)
             {
                 if (interval > 1)
                 {
@@ -372,7 +422,7 @@ namespace AnimatorStressTest
                 {
                     ReleaseBucket(opt);
                 }
-                EvaluateThisFrame(opt, frame);
+                EvaluateThisFrame(opt, ctx);
                 return true;
             }
 
@@ -380,7 +430,7 @@ namespace AnimatorStressTest
             if (interval <= 1)
             {
                 ReleaseBucket(opt);
-                EvaluateThisFrame(opt, frame);
+                EvaluateThisFrame(opt, ctx);
                 return true;
             }
 
@@ -391,18 +441,50 @@ namespace AnimatorStressTest
                 SetEnabled(opt, false);
                 return false;
             }
-            EvaluateThisFrame(opt, frame);
+            EvaluateThisFrame(opt, ctx);
             return true;
         }
 
-        /// <summary>このフレームに Animator を評価させる(speed = Speed × 経過フレーム数)。</summary>
-        private static void EvaluateThisFrame(AnimatorLod opt, int frame)
+        /// <summary>
+        /// このフレームに Animator を評価させる。Animator はこのフレームの deltaTime × speed だけ進むので、
+        /// speed = Speed × (前回の評価からの経過時間 / このフレームの deltaTime) にして、間引いたフレームの実時間を補償する
+        /// (フレームレートが変動しても、間引いた各フレームの deltaTime の合計がそのまま進む)。
+        /// </summary>
+        private static void EvaluateThisFrame(AnimatorLod opt, in TickContext ctx)
         {
-            int elapsed = Mathf.Clamp(frame - opt.Schedule.LastEvaluatedFrame, 1, MaxElapsedFrames);
-            opt.Schedule.LastEvaluatedFrame = frame;
-            opt.Schedule.FirstEvaluationPending = false;
+            ref var schedule = ref opt.Schedule;
+            int frames = ctx.Frame - schedule.LastEvaluatedFrame;
+            float scale;
+            if (frames <= 1)
+            {
+                // 毎フレーム評価(と登録直後)は補償不要。比率を計算すると誤差で speed が毎回変わり、設定し直しが増える
+                scale = 1f;
+            }
+            else if (frames > MaxElapsedFrames)
+            {
+                // 通常は起きない(評価の間隔は最大でも MaxElapsedFrames)。念のため補償量に上限を設ける
+                scale = MaxElapsedFrames;
+            }
+            else
+            {
+                // Update Mode は間引いた評価のときだけ読む(毎フレーム評価の個体にネイティブ呼び出しを増やさない)。Fixed は非対応のため通常の時刻を使う
+                bool unscaled = opt.Animator.updateMode == AnimatorUpdateMode.UnscaledTime;
+                double elapsed = unscaled ? ctx.UnscaledNow - schedule.LastEvaluatedUnscaledTime : ctx.Now - schedule.LastEvaluatedTime;
+                float deltaTime = unscaled ? ctx.UnscaledDeltaTime : ctx.DeltaTime;
+                // deltaTime が 0(timeScale = 0 など)のときは Animator も進まないので補償しない
+                scale = deltaTime > 0f ? Mathf.Max(1f, (float)(elapsed / deltaTime)) : 1f;
+                // フレームレートが一定なら比率は経過フレーム数に一致する。誤差だけの差なら整数に揃え、speed の設定し直しを避ける
+                if (Mathf.Abs(scale - frames) < frames * 1e-4f)
+                {
+                    scale = frames;
+                }
+            }
+            schedule.LastEvaluatedFrame = ctx.Frame;
+            schedule.LastEvaluatedTime = ctx.Now;
+            schedule.LastEvaluatedUnscaledTime = ctx.UnscaledNow;
+            schedule.FirstEvaluationPending = false;
             SetEnabled(opt, true);
-            SetSpeed(opt, opt.Speed * elapsed);
+            SetSpeed(opt, opt.Speed * scale);
         }
 
         /// <summary>値が変わったときだけ Animator.enabled を設定する。</summary>
@@ -510,49 +592,91 @@ namespace AnimatorStressTest
 
         // ---- Skin Weights キャッシュ ----
 
-        /// <summary>mesh について mask の Skin Weights が温め済みか(null は true)。</summary>
-        internal static bool IsSkinWeightsWarmed(Mesh mesh, int mask)
+        /// <summary>
+        /// mesh を quality で描画するときにスキニングで使われる Skin Weights。
+        /// エンジンと同じく renderer の quality(Auto は上限なし)・QualitySettings.skinWeights・Mesh が持つ本数の最小を取る。
+        /// </summary>
+        internal static SkinWeights ResolveSkinWeights(Mesh mesh, SkinQuality quality)
         {
             if (mesh == null)
             {
-                return true;
+                return SkinWeights.None;
             }
-            s_state.WarmedSkinWeights.TryGetValue(mesh, out int done);
-            return (mask & ~done) == 0;
+            int rendererMax = quality == SkinQuality.Auto ? (int)SkinWeights.Unlimited : (int)quality;
+            int qualityMax = (int)QualitySettings.skinWeights;
+            int available = (int)mesh.skinWeightBufferLayout;
+            return (SkinWeights)Mathf.Min(available, Mathf.Min(rendererMax, qualityMax));
         }
 
-        /// <summary>BakeMesh で mesh の Skin Weights のキャッシュを事前に作る(smr の sharedMesh と quality は呼び出し側で戻す)。</summary>
-        internal static void WarmSkinWeights(SkinnedMeshRenderer smr, Mesh mesh, int mask)
+        private static int SkinWeightsBit(SkinWeights layout)
         {
-            if (mesh == null)
+            switch (layout)
+            {
+                case SkinWeights.OneBone: return 1;
+                case SkinWeights.TwoBones: return 2;
+                case SkinWeights.FourBones: return 4;
+                case SkinWeights.Unlimited: return 8;
+                default: return 0;
+            }
+        }
+
+        /// <summary>
+        /// mesh の layout 用のボーンウェイトの GPU バッファを事前に作る(GPU スキニングが初回に作るものと同じ)。
+        /// 返る GraphicsBuffer は Mesh のバッファを参照するだけなので、Dispose しても Mesh 側のバッファは残る。
+        /// </summary>
+        internal static void WarmSkinWeights(Mesh mesh, SkinWeights layout)
+        {
+            int bit = SkinWeightsBit(layout);
+            if (mesh == null || bit == 0)
             {
                 return;
             }
             var warmed = s_state.WarmedSkinWeights;
-            warmed.TryGetValue(mesh, out int done);
-            int todo = mask & ~done;
-            if (todo == 0)
+            int id = mesh.GetInstanceID();
+            if (warmed.TryGetValue(id, out var entry))
+            {
+                // 同じ instance ID でも記録した C# オブジェクトと違えば、アンロード後に読み直された(Resources は同じ ID で読み直される)か
+                // C# 側が回収された。前者は GPU バッファも破棄されているので温め直す(後者はバッファが残っているので温め直しは安い)
+                if (!entry.IsAlive(out var recorded) || !ReferenceEquals(recorded, mesh))
+                {
+                    entry.Mesh.SetTarget(mesh);
+                    entry.Bits = 0;
+                }
+            }
+            else
+            {
+                // 新しい Mesh を記録する前に、アンロード・破棄済みの Mesh の記録を捨てる
+                // (記録は読み込まれている Mesh の数 + 前回の追加以降にアンロードされた数までに収まる)
+                RemoveUnloadedMeshes(warmed);
+                entry = new WarmedMesh(mesh);
+                warmed.Add(id, entry);
+            }
+            if ((entry.Bits & bit) != 0)
             {
                 return;
             }
 
-            if (s_bakeScratch == null)
+            mesh.GetBoneWeightBuffer(layout)?.Dispose();
+            entry.Bits |= bit;
+        }
+
+        // RemoveUnloadedMeshes の作業用(呼ぶたびに確保しない)
+        private static readonly List<int> s_unloadedMeshes = new List<int>();
+
+        private static void RemoveUnloadedMeshes(Dictionary<int, WarmedMesh> warmed)
+        {
+            foreach (var pair in warmed)
             {
-                s_bakeScratch = new Mesh { name = "AnimatorLod.BakeScratch", hideFlags = HideFlags.HideAndDontSave };
-            }
-            if (smr.sharedMesh != mesh)
-            {
-                smr.sharedMesh = mesh;
-            }
-            for (int q = 1; q <= 4; q <<= 1)
-            {
-                if ((todo & (1 << q)) != 0)
+                if (!pair.Value.IsAlive(out _))
                 {
-                    smr.quality = (SkinQuality)q;
-                    smr.BakeMesh(s_bakeScratch);
+                    s_unloadedMeshes.Add(pair.Key);
                 }
             }
-            warmed[mesh] = done | todo;
+            for (int i = 0; i < s_unloadedMeshes.Count; i++)
+            {
+                warmed.Remove(s_unloadedMeshes[i]);
+            }
+            s_unloadedMeshes.Clear();
         }
     }
 }
