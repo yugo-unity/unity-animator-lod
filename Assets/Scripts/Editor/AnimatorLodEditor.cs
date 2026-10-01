@@ -1,13 +1,15 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace AnimatorLodTest.Editor
 {
     /// <summary>
     /// AnimatorLod の Inspector。
     /// References(表示のみ)/ LOD の 2 バンド。LOD バンドは共通の LOD 境界
-    /// (Ratios バー・Transition・Culled)と、それを使う Animation LOD / Mesh LOD / Skin Weights のサブバンドで構成する。
+    /// (Dither Fade・Near Cull Distance・Ratios バー・Transition・Culled)と、それを使う Animation LOD / Mesh LOD / Skin Weights のサブバンドで構成する。
     /// 各項目の詳細は README.md を参照。
     ///
     /// IMGUI はイベントごと(Layout / Repaint / 入力)に全体を描き直すため、固定のラベル・スタイル・SerializedProperty・
@@ -35,7 +37,17 @@ namespace AnimatorLodTest.Editor
         private static readonly GUIContent RefreshReferencesLabel = new GUIContent("Refresh References", "Fetch the Animator and child SkinnedMeshRenderers again.");
         private static readonly GUIContent BoundsLabel = new GUIContent("Bounds", "AABB in this transform's local space. Used as the bounding sphere for LOD.");
         private static readonly GUIContent RatiosLabel = new GUIContent("Ratios", "Screen-size ratio per LOD (left 100%, right 0%). Drag the boundaries to edit.");
-        private static readonly GUIContent CulledLabel = new GUIContent("Culled (% Screen Size)", "Below this ratio the Invisible Interval applies. 0 = off.");
+        private static readonly GUIContent CulledLabel = new GUIContent("Culled (% Screen Size)",
+            "Below this ratio the Invisible Interval applies. 0 = off. With Dither Fade, the instance fades out below this ratio and stops rendering.");
+        private static readonly GUIContent DitherFadeLabel = new GUIContent("Dither Fade",
+            "Dither-fade out below Culled and within Near Cull Distance, then stop rendering. LOD transitions stay hard switches. " +
+            "Needs LOD Cross Fade in the URP Asset and a material whose shader supports " + AnimatorLod.DitherFadeKeyword + ".");
+        private static readonly GUIContent DitherFadeUnsupportedLabel = new GUIContent("Dither Fade",
+            "Disabled: LOD Cross Fade is off in the URP Asset (or the render pipeline is not URP).");
+        private static readonly GUIContent FadeDurationLabel = new GUIContent("Fade Duration (s)",
+            "Dither fade time in seconds (scaled time, like LODGroup). 0 = switch immediately.");
+        private static readonly GUIContent NearCullDistanceLabel = new GUIContent("Near Cull Distance",
+            "When the LOD Camera comes closer than this distance (m) to the bounding sphere center, the instance dither-fades out and stops rendering. 0 = off. Needs Dither Fade.");
         private static readonly GUIContent AnimationLodEnabledLabel = new GUIContent("Enabled", "Throttle the Animator update per LOD. Mesh LOD and Skin Weights work without this.");
         private static readonly GUIContent LodCameraLabel = new GUIContent("LOD Camera", "Camera for the screen-size ratio. Empty = Camera.main.");
         private static readonly GUIContent BaseIntervalLabel = new GUIContent("Base Interval", "Animator update interval (frames) added to every LOD. 0/1 = every frame.");
@@ -83,6 +95,9 @@ namespace AnimatorLodTest.Editor
         private SerializedProperty _invisibleInterval;
         private SerializedProperty _lodIntervals;
         private SerializedProperty _cullRatio;
+        private SerializedProperty _ditherFadeEnabled;
+        private SerializedProperty _fadeDuration;
+        private SerializedProperty _nearCullDistance;
         private SerializedProperty _meshLodEnabled;
         private SerializedProperty _lodEvaluationInterval;
         private SerializedProperty _skinWeightsLodEnabled;
@@ -107,6 +122,9 @@ namespace AnimatorLodTest.Editor
             _invisibleInterval = serializedObject.FindProperty("invisibleInterval");
             _lodIntervals = serializedObject.FindProperty("lodIntervals");
             _cullRatio = serializedObject.FindProperty("cullRatio");
+            _ditherFadeEnabled = serializedObject.FindProperty("ditherFadeEnabled");
+            _fadeDuration = serializedObject.FindProperty("fadeDuration");
+            _nearCullDistance = serializedObject.FindProperty("nearCullDistance");
             _meshLodEnabled = serializedObject.FindProperty("meshLodEnabled");
             _lodEvaluationInterval = serializedObject.FindProperty("lodEvaluationInterval");
             _skinWeightsLodEnabled = serializedObject.FindProperty("skinWeightsLodEnabled");
@@ -158,11 +176,32 @@ namespace AnimatorLodTest.Editor
 
             // LOD Camera は Animation LOD / Mesh LOD / Skin Weights で共通の LOD 判定に使う
             EditorGUILayout.PropertyField(_lodCamera, LodCameraLabel);
-            // Mesh LOD / Skin Weights 用の判定間隔。Animation LOD が有効な間(評価フレームで判定する)と、
-            // Mesh LOD / Skin Weights がともに無効な間は参照されないのでグレーアウトする
-            using (new EditorGUI.DisabledScope(IsAllOn(_lodEnabled) || (IsAllOff(_meshLodEnabled) && IsAllOff(_skinWeightsLodEnabled))))
+            // URP の LOD Cross Fade が無効なら Dither Fade は動かない(設定値は残したまま、オフとして見せる)
+            bool ditherSupported = IsLodCrossFadeSupported();
+            bool ditherOff = !ditherSupported || IsAllOff(_ditherFadeEnabled);
+
+            // Mesh LOD / Skin Weights / Dither Fade 用の判定間隔。Animation LOD が有効な間(評価フレームで判定する)と、
+            // Mesh LOD / Skin Weights / Dither Fade がすべて無効な間は参照されないのでグレーアウトする
+            using (new EditorGUI.DisabledScope(IsAllOn(_lodEnabled) || (IsAllOff(_meshLodEnabled) && IsAllOff(_skinWeightsLodEnabled) && ditherOff)))
             {
                 EditorGUILayout.IntSlider(_lodEvaluationInterval, 1, AnimatorLod.MaxLodEvaluationInterval, LodEvaluationIntervalLabel);
+            }
+
+            if (ditherSupported)
+            {
+                EditorGUILayout.PropertyField(_ditherFadeEnabled, DitherFadeLabel);
+            }
+            else
+            {
+                using (new EditorGUI.DisabledScope(true))
+                {
+                    EditorGUILayout.Toggle(DitherFadeUnsupportedLabel, false);
+                }
+            }
+            using (new EditorGUI.DisabledScope(ditherOff))
+            {
+                EditorGUILayout.PropertyField(_fadeDuration, FadeDurationLabel);
+                EditorGUILayout.PropertyField(_nearCullDistance, NearCullDistanceLabel);
             }
 
             Rect barRect = EditorGUILayout.GetControlRect(true, BarHeight);
@@ -225,6 +264,13 @@ namespace AnimatorLodTest.Editor
             return new EditorGUI.DisabledScope(IsAllOff(enabled));
         }
 
+        /// <summary>
+        /// 現在のレンダーパイプラインが URP で、その Asset の LOD Cross Fade が有効か。
+        /// ランタイムは URP がこの値を反映した QualitySettings.enableLODCrossFade を見る(<see cref="AnimatorLod.DitherFadeSupported"/>)。
+        /// </summary>
+        private static bool IsLodCrossFadeSupported() =>
+            GraphicsSettings.currentRenderPipeline is UniversalRenderPipelineAsset urp && urp.enableLODCrossFade;
+
         /// <summary>選択中の全コンポーネントで false か(値が混在していれば false)。</summary>
         private static bool IsAllOff(SerializedProperty flag) => !flag.hasMultipleDifferentValues && !flag.boolValue;
 
@@ -276,11 +322,15 @@ namespace AnimatorLodTest.Editor
             float ratio;
             string source;
             string detail = null;
+            // Play 中はランタイムと同じ値、編集中は Inspector と同じ値で判定する
+            bool ditherFade = lod.DitherFadeEnabled && (Application.isPlaying ? AnimatorLod.DitherFadeSupported : IsLodCrossFadeSupported());
+            bool nearCulled;
 
-            if (Application.isPlaying && (lod.LodEnabled || lod.MeshLodEnabled || lod.SkinWeightsLodEnabled))
+            if (Application.isPlaying && (lod.LodEnabled || lod.MeshLodEnabled || lod.SkinWeightsLodEnabled || ditherFade))
             {
                 level = lod.CurrentLod;
                 ratio = lod.CurrentScreenRatio;
+                nearCulled = lod.IsNearCulled;
                 source = "runtime";
                 var smr = FirstRenderer(lod);
                 detail = lod.LodEnabled
@@ -291,11 +341,18 @@ namespace AnimatorLodTest.Editor
                     int verts = smr.sharedMesh != null ? smr.sharedMesh.vertexCount : 0;
                     detail += $"\nMesh {verts} verts  Skin {smr.quality}";
                 }
+                if (ditherFade)
+                {
+                    detail += lod.IsFadeHidden ? "\nFade: hidden (rendering off)"
+                        : lod.IsFading ? $"\nFade: {lod.FadeVisibility * 100f:0}% visible"
+                        : "\nFade: visible";
+                }
             }
             else if (Application.isPlaying)
             {
                 level = -1;
                 ratio = 0f;
+                nearCulled = false;
                 source = "runtime";
             }
             else
@@ -311,11 +368,14 @@ namespace AnimatorLodTest.Editor
                 {
                     return;
                 }
-                level = lod.EditorPreviewLod(cam, out ratio, out _);
+                level = lod.EditorPreviewLod(cam, out ratio, out _, out nearCulled);
             }
 
+            // Near Culled は Dither Fade が動くときだけ効く
+            nearCulled &= ditherFade;
             string title = level < 0
                 ? "LOD off"
+                : nearCulled ? "Near Culled"
                 : level >= levels ? "Culled" : $"LOD {level}";
             string text = level < 0
                 ? $"<b>{title}</b>"
@@ -337,7 +397,7 @@ namespace AnimatorLodTest.Editor
 
             var prev = GUI.backgroundColor;
             GUI.backgroundColor = level < 0 ? Color.gray
-                : level >= levels ? new Color(0.25f, 0.25f, 0.25f)
+                : nearCulled || level >= levels ? new Color(0.25f, 0.25f, 0.25f)
                 : SegmentColor(level, levels - 1) * 1.6f;
             GUI.Label(rect, content, s_sceneLabel);
             GUI.backgroundColor = prev;

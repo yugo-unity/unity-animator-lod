@@ -4,7 +4,7 @@ namespace AnimatorLodTest
 {
     /// <summary>
     /// Animator を持つ GameObject に 1 つずつ付ける個体単位の最適化コンポーネント
-    /// (Animation LOD / Mesh LOD / Skin Weights LOD)。毎フレームの判定と切替は <see cref="AnimatorLodSystem"/> が行う。
+    /// (Animation LOD / Mesh LOD / Skin Weights LOD / Dither Fade)。毎フレームの判定と切替は <see cref="AnimatorLodSystem"/> が行う。
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(Animator))]
@@ -14,6 +14,12 @@ namespace AnimatorLodTest
         public const float MinRatio = 0.0001f;
         /// <summary>Animation LOD が無効な間の LOD 判定間隔(<see cref="LodEvaluationInterval"/>)の最大。</summary>
         public const int MaxLodEvaluationInterval = MaxInterval * 2;
+        /// <summary>Dither Fade のフェード時間の既定(LODGroup.crossFadeAnimationDuration の既定と同じ)。</summary>
+        public const float DefaultFadeDuration = 0.5f;
+        /// <summary>フェード用マテリアルで有効にするシェーダーキーワード(AnimatorLodDitherFade.hlsl と対)。</summary>
+        public const string DitherFadeKeyword = "ANIMATOR_LOD_DITHER_FADE";
+        /// <summary>RSUV のうちフェード量に使うビット(下位 8 bit。0 = 完全表示、255 = 完全に消えた)。</summary>
+        public const uint DitherFadeValueMask = 0xFFu;
 
         // ---- References(Editor で準備する。ランタイムでは探索しない) ----
         [SerializeField, Tooltip("Target Animator. Prepared in the Editor.")]
@@ -28,6 +34,10 @@ namespace AnimatorLodTest
             public Mesh[] lodMeshes;
             public Mesh mesh;
             public SkinQuality quality;
+            // Dither Fade 用(ランタイムのみ)。fadeSource は差し替え前の sharedMaterials、fadeMaterials はフェード中の差し替え先。
+            // fadeMaterials が null なら差し替えない(フェード用マテリアルに対応するシェーダーが無い)
+            [System.NonSerialized] public Material[] fadeSource;
+            [System.NonSerialized] public Material[] fadeMaterials;
         }
 
         [SerializeField, Tooltip("Target renderers and their prepared data. Prepared in the Editor.")]
@@ -76,6 +86,15 @@ namespace AnimatorLodTest
         [SerializeField, Range(0f, 1f), Tooltip("Below this ratio the Invisible Interval applies. 0 = off.")]
         private float cullRatio;
 
+        // ---- Dither Fade(Near / Far) ----
+        [SerializeField, Tooltip("Dither-fade out below Culled and within Near Cull Distance, then stop rendering. " +
+                                 "Needs LOD Cross Fade in the URP Asset and a material whose shader supports " + DitherFadeKeyword + ".")]
+        private bool ditherFadeEnabled;
+        [SerializeField, Min(0f), Tooltip("Dither fade time in seconds (scaled time, like LODGroup). 0 = switch immediately.")]
+        private float fadeDuration = DefaultFadeDuration;
+        [SerializeField, Min(0f), Tooltip("Fade out when the LOD Camera is closer than this distance (m) to the bounding sphere center. 0 = off.")]
+        private float nearCullDistance;
+
         // ---- Mesh LOD / Skin Weights LOD(検証用) ----
         // Mesh LOD の差し替え先は RendererBinding.lodMeshes に持つ
         [SerializeField, Tooltip("Swap SkinnedMeshRenderer.sharedMesh to a reduced mesh per LOD.")]
@@ -114,7 +133,25 @@ namespace AnimatorLodTest
         private int _currentLod = -1;
         private float _screenRatio;
         private bool _culled;
+        private bool _nearCulled;
         private bool _immediateRequested;
+
+        private enum FadeState : byte
+        {
+            /// <summary>元のマテリアルで表示中(RSUV = 0)。</summary>
+            Visible,
+            /// <summary>フェード用マテリアルに差し替えてフェード中。</summary>
+            Fading,
+            /// <summary>フェードアウトが終わり forceRenderingOff で描画を止めている(元のマテリアルに戻し済み)。</summary>
+            Hidden,
+        }
+
+        private FadeState _fadeState;
+        // 1 = 完全表示、0 = 完全に消えた
+        private float _fadeVisibility = 1f;
+        private uint _appliedFadeValue;
+        // 登録後の最初の判定では、フェードせずに結果へ合わせる(生成直後の個体が Culled ならフェードアウトさせない)
+        private bool _fadeSnapPending = true;
         // 設定が変わったので、間引きの位相を待たずに次の Tick で LOD を判定し直す
         private bool _lodRefreshRequested;
         private float _speed = 1f;
@@ -124,6 +161,8 @@ namespace AnimatorLodTest
         public bool LodEnabled => lodEnabled;
         public bool MeshLodEnabled => meshLodEnabled;
         public bool SkinWeightsLodEnabled => skinWeightsLodEnabled;
+        /// <summary>Dither Fade の設定値。実際に動くのは URP の LOD Cross Fade も有効なとき(<see cref="DitherFadeSupported"/>)。</summary>
+        public bool DitherFadeEnabled => ditherFadeEnabled;
         public BoundsSource LodBoundsSource => boundsSource;
         public Bounds LodBounds => lodBounds;
         public Camera LodCamera => lodCamera;
@@ -155,6 +194,30 @@ namespace AnimatorLodTest
             set => lodEvaluationInterval = Mathf.Clamp(value, 1, MaxLodEvaluationInterval);
         }
 
+        /// <summary>Dither Fade のフェード時間(秒、スケールされた時間)。0 = 即時に切り替える。</summary>
+        public float FadeDuration
+        {
+            get => fadeDuration;
+            set => fadeDuration = Mathf.Max(0f, value);
+        }
+
+        /// <summary>LOD Camera が外接球の中心からこの距離(m)より近いと Dither Fade でフェードアウトする。0 = オフ。</summary>
+        public float NearCullDistance
+        {
+            get => nearCullDistance;
+            set
+            {
+                nearCullDistance = Mathf.Max(0f, value);
+                _lodRefreshRequested = true;
+            }
+        }
+
+        /// <summary>
+        /// Dither Fade が使えるか(URP Asset の LOD Cross Fade。URP はパイプライン生成時に QualitySettings.enableLODCrossFade へ反映する)。
+        /// 無効なら <see cref="DitherFadeEnabled"/> が true でも Dither Fade は動かない。
+        /// </summary>
+        public static bool DitherFadeSupported => QualitySettings.enableLODCrossFade;
+
         /// <summary>Animator の再生速度。有効な間は Animator.speed の代わりにこれを設定する。</summary>
         public float Speed
         {
@@ -183,6 +246,14 @@ namespace AnimatorLodTest
         public float CurrentScreenRatio => _screenRatio;
         /// <summary>直近の判定で Culled だったか。</summary>
         public bool IsCulled => _culled;
+        /// <summary>直近の判定で LOD Camera が Near Cull Distance より近かったか。</summary>
+        public bool IsNearCulled => _nearCulled;
+        /// <summary>Dither Fade でフェード中か。</summary>
+        public bool IsFading => _fadeState == FadeState.Fading;
+        /// <summary>Dither Fade のフェードアウトが終わり、描画を止めているか。</summary>
+        public bool IsFadeHidden => _fadeState == FadeState.Hidden;
+        /// <summary>Dither Fade の表示量(1 = 完全表示、0 = 完全に消えた)。</summary>
+        public float FadeVisibility => _fadeVisibility;
         /// <summary>直近の判定で不可視だったか。</summary>
         public bool IsInvisible { get; internal set; }
         /// <summary>直近の判定で適用した更新間隔。</summary>
@@ -196,7 +267,7 @@ namespace AnimatorLodTest
         internal bool HasEvaluatedLod => _currentLod >= 0;
         internal AnimatorLodSystem.InstanceSchedule Schedule = AnimatorLodSystem.InstanceSchedule.Unregistered;
         /// <summary>ResetRuntimeState で戻すべき状態があるか。</summary>
-        internal bool HasLodState => _currentLod >= 0 || _appliedMeshLod != 0 || _appliedSkinLod != 0;
+        internal bool HasLodState => _currentLod >= 0 || _appliedMeshLod != 0 || _appliedSkinLod != 0 || _fadeState != FadeState.Visible;
 
         // Awake 以降のランタイム処理は次を前提とし、null チェックしない:
         //   animator / renderers / lod* 配列は非 null、lodMeshes は非 null(要素は null 可 = 元の Mesh)。
@@ -289,6 +360,11 @@ namespace AnimatorLodTest
                 return;
             }
             WarmSkinWeightCaches();
+            // Dither Fade が有効なら、最初のフェードの Tick で作らないよう今のうちにフェード用マテリアルを用意する
+            if (ditherFadeEnabled && DitherFadeSupported)
+            {
+                PrepareFadeMaterials();
+            }
             // 登録すると Animator.speed はシステムが書き換えるので、その前にユーザーの速度として取り込む
             _speed = animator.speed;
             AnimatorLodSystem.Register(this);
@@ -354,10 +430,22 @@ namespace AnimatorLodTest
         }
 
         /// <summary>
-        /// Mesh LOD / Skin Weights LOD が使うボーンウェイトの GPU バッファを今すぐ作る(同じ Mesh と本数の組は 1 回だけ)。
+        /// Dither Fade の有効/無効。無効化時はフェード中・描画停止中でも次の Tick で元の表示に戻す。
+        /// 有効化してもフェード用マテリアルはここでは作らない(最初にフェードが起きたときに作る。先に用意するなら <see cref="Prewarm"/>)。
+        /// </summary>
+        public void SetDitherFadeEnabled(bool enable)
+        {
+            ditherFadeEnabled = enable;
+            _lodRefreshRequested = true;
+        }
+
+        /// <summary>
+        /// Mesh LOD / Skin Weights LOD が使うボーンウェイトの GPU バッファと、Dither Fade のフェード用マテリアルを今すぐ作る
+        /// (同じ Mesh と本数の組、同じマテリアルは 1 回だけ)。
         /// 通常はコンポーネントが有効になったときに自動で行うが、そのフレームに作成の負荷が乗るため、
         /// ロード中などに呼んでおく。プレハブのアセットに対しても呼べる(インスタンスを作らず、アセットも書き換えない)。
         /// 実行中に QualitySettings.skinWeights を変えたあとに呼び直すと、新しく必要になった本数の分を作る。
+        /// フェード用マテリアルは Dither Fade が有効(URP の LOD Cross Fade も有効)な Play 中だけ作る。
         /// </summary>
         public void Prewarm()
         {
@@ -366,6 +454,10 @@ namespace AnimatorLodTest
                 return;
             }
             WarmSkinWeightCaches();
+            if (ditherFadeEnabled && DitherFadeSupported)
+            {
+                WarmFadeMaterials();
+            }
         }
 
         /// <summary>次の Tick で間引きに関わらず 1 回評価させる。外部から Animator のステートやパラメータを変えた直後に呼ぶ。</summary>
@@ -484,32 +576,261 @@ namespace AnimatorLodTest
             }
         }
 
+        // ---- Dither Fade ----
+
+        // GetSharedMaterials の受け取り用(呼ぶたびに確保しない。メインスレッドのみ)
+        private static readonly System.Collections.Generic.List<Material> s_materialScratch = new System.Collections.Generic.List<Material>();
+
+        /// <summary>
+        /// Dither Fade を 1 フレーム進める(LOD 判定の後に Tick から毎フレーム呼ばれる)。
+        /// active = Dither Fade の設定と URP の LOD Cross Fade がともに有効。無効なら元の表示に戻す。
+        /// </summary>
+        internal void UpdateDitherFade(bool active, float deltaTime)
+        {
+            if (!active)
+            {
+                if (_fadeState != FadeState.Visible)
+                {
+                    ShowImmediately();
+                }
+                return;
+            }
+            if (!HasEvaluatedLod)
+            {
+                return;
+            }
+
+            bool hide = _culled || _nearCulled;
+            bool snap = _fadeSnapPending;
+            _fadeSnapPending = false;
+            switch (_fadeState)
+            {
+                case FadeState.Visible:
+                    if (!hide)
+                    {
+                        return;
+                    }
+                    if (snap)
+                    {
+                        HideImmediately();
+                        return;
+                    }
+                    BeginFade(1f);
+                    break;
+                case FadeState.Hidden:
+                    if (hide)
+                    {
+                        return;
+                    }
+                    SetForceRenderingOff(false);
+                    BeginFade(0f);
+                    break;
+            }
+
+            // フェード中。向きが逆になっても今の表示量から戻る
+            float step = fadeDuration > 0f ? deltaTime / fadeDuration : 1f;
+            _fadeVisibility = Mathf.Clamp01(_fadeVisibility + (hide ? -step : step));
+            if (hide && _fadeVisibility <= 0f)
+            {
+                HideImmediately();
+            }
+            else if (!hide && _fadeVisibility >= 1f)
+            {
+                ShowImmediately();
+            }
+            else
+            {
+                ApplyFadeValue((uint)Mathf.RoundToInt((1f - _fadeVisibility) * DitherFadeValueMask));
+            }
+        }
+
+        /// <summary>フェード用マテリアルに差し替えてフェードを始める。</summary>
+        private void BeginFade(float visibility)
+        {
+            RemoveMissingRenderers();
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                ref var binding = ref renderers[i];
+                PrepareFadeMaterials(ref binding);
+                if (binding.fadeMaterials != null)
+                {
+                    binding.renderer.sharedMaterials = binding.fadeMaterials;
+                }
+            }
+            _fadeState = FadeState.Fading;
+            _fadeVisibility = visibility;
+        }
+
+        /// <summary>元のマテリアルと RSUV に戻し、描画を止める(フェードアウトの完了)。</summary>
+        private void HideImmediately()
+        {
+            // 表示中から直接止める(登録直後)ときは SMR が元のマテリアルのままなので触らない
+            if (_fadeState == FadeState.Fading)
+            {
+                RestoreFadeMaterials();
+            }
+            SetForceRenderingOff(true);
+            _fadeState = FadeState.Hidden;
+            _fadeVisibility = 0f;
+        }
+
+        /// <summary>元のマテリアル・RSUV・描画に戻す(フェードインの完了、または Dither Fade の無効化)。</summary>
+        private void ShowImmediately()
+        {
+            if (_fadeState == FadeState.Hidden)
+            {
+                SetForceRenderingOff(false);
+            }
+            else if (_fadeState == FadeState.Fading)
+            {
+                RestoreFadeMaterials();
+            }
+            _fadeState = FadeState.Visible;
+            _fadeVisibility = 1f;
+        }
+
+        private void RestoreFadeMaterials()
+        {
+            RemoveMissingRenderers();
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var binding = renderers[i];
+                if (binding.fadeMaterials != null)
+                {
+                    binding.renderer.sharedMaterials = binding.fadeSource;
+                }
+            }
+            ApplyFadeValue(0u);
+        }
+
+        private void SetForceRenderingOff(bool off)
+        {
+            RemoveMissingRenderers();
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                renderers[i].renderer.forceRenderingOff = off;
+            }
+        }
+
+        /// <summary>RSUV の下位 8 bit にフェード量を書く(値が変わったときだけ)。上位 24 bit は予約で 0。</summary>
+        private void ApplyFadeValue(uint value)
+        {
+            if (_appliedFadeValue == value)
+            {
+                return;
+            }
+            _appliedFadeValue = value;
+            RemoveMissingRenderers();
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                renderers[i].renderer.SetShaderUserValue(value);
+            }
+        }
+
+        /// <summary>全 SMR の現在の sharedMaterials に対するフェード用マテリアルの配列を用意する(OnEnable 用)。</summary>
+        private void PrepareFadeMaterials()
+        {
+            RemoveMissingRenderers();
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                PrepareFadeMaterials(ref renderers[i]);
+            }
+        }
+
+        /// <summary>
+        /// binding の SMR の現在の sharedMaterials(元のマテリアル)に対するフェード用マテリアルの配列を用意する。
+        /// 前回と同じマテリアルなら作り直さない(確保しない)。SMR が元のマテリアルを持っている間にだけ呼ぶ。
+        /// </summary>
+        private static void PrepareFadeMaterials(ref RendererBinding binding)
+        {
+            var current = s_materialScratch;
+            binding.renderer.GetSharedMaterials(current);
+            bool same = binding.fadeSource != null && SameMaterials(binding.fadeSource, current);
+            // static のリストにマテリアルを残すと、使われなくなっても Resources.UnloadUnusedAssets で解放されないので空にする
+            var source = same ? null : current.ToArray();
+            current.Clear();
+            if (same)
+            {
+                return;
+            }
+
+            var fade = new Material[source.Length];
+            bool anyFade = false;
+            for (int m = 0; m < source.Length; m++)
+            {
+                fade[m] = AnimatorLodSystem.GetFadeMaterial(source[m]);
+                anyFade |= fade[m] != source[m];
+            }
+            binding.fadeSource = source;
+            binding.fadeMaterials = anyFade ? fade : null;
+        }
+
+        private static bool SameMaterials(Material[] recorded, System.Collections.Generic.List<Material> current)
+        {
+            if (recorded.Length != current.Count)
+            {
+                return false;
+            }
+            for (int m = 0; m < recorded.Length; m++)
+            {
+                if (!ReferenceEquals(recorded[m], current[m]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 各 SMR の sharedMaterials に対するフェード用マテリアルを作っておく(<see cref="Prewarm"/> 用)。
+        /// プレハブのアセットに対しても呼ばれるので、renderers(と各 binding の配列)は書き換えない。
+        /// </summary>
+        private void WarmFadeMaterials()
+        {
+            var current = s_materialScratch;
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var smr = renderers[i].renderer;
+                if (smr == null)
+                {
+                    continue;
+                }
+                smr.GetSharedMaterials(current);
+                for (int m = 0; m < current.Count; m++)
+                {
+                    AnimatorLodSystem.GetFadeMaterial(current[m]);
+                }
+            }
+            current.Clear();
+        }
+
         // ---- AnimatorLodSystem から呼ばれる判定 ----
 
-        /// <summary>Screen Size 比から LOD と Culled を決め、Mesh LOD と Skin Weights LOD に反映する。</summary>
+        /// <summary>Screen Size 比から LOD と Culled を、カメラ距離から Near Culled を決め、Mesh LOD と Skin Weights LOD に反映する。</summary>
         internal void EvaluateLod(in LodView view)
         {
-            float ratio = ComputeScreenRatio(_transform.localToWorldMatrix, view);
+            float ratio = ComputeScreenRatio(_transform.localToWorldMatrix, view, out float distance);
             _screenRatio = ratio;
             _culled = IsCulledRatio(ratio);
+            _nearCulled = IsNearCulledDistance(distance);
             int level = LevelForRatio(ratio);
             _currentLod = level;
 
             ApplyLodOverrides(_culled ? lodRatios.Length : level);
         }
 
-        /// <summary>外接球が画面高さに占める割合。カメラが無ければ 1。</summary>
-        private float ComputeScreenRatio(in Matrix4x4 localToWorld, in LodView view)
+        /// <summary>外接球が画面高さに占める割合。カメラが無ければ 1。distance はカメラから外接球の中心までの距離(カメラが無ければ無限大)。</summary>
+        private float ComputeScreenRatio(in Matrix4x4 localToWorld, in LodView view, out float distance)
         {
             if (!view.HasCamera)
             {
+                distance = float.PositiveInfinity;
                 return 1f;
             }
             // 中心と半径は localToWorld だけから求める(lossyScale + TransformPoint の 2 回のネイティブ呼び出しを避ける)
             float radius = LodSphereRadius(localToWorld);
-            float denom = view.Orthographic
-                ? view.Scale
-                : Vector3.Distance(view.Position, localToWorld.MultiplyPoint3x4(lodBounds.center)) * view.Scale;
+            distance = Vector3.Distance(view.Position, localToWorld.MultiplyPoint3x4(lodBounds.center));
+            float denom = view.Orthographic ? view.Scale : distance * view.Scale;
             return radius / Mathf.Max(denom, 1e-4f);
         }
 
@@ -528,6 +849,8 @@ namespace AnimatorLodTest
         }
 
         private bool IsCulledRatio(float ratio) => cullRatio > 0f && ratio < cullRatio;
+
+        private bool IsNearCulledDistance(float distance) => nearCullDistance > 0f && distance < nearCullDistance;
 
         private int LevelForRatio(float ratio)
         {
@@ -573,14 +896,20 @@ namespace AnimatorLodTest
             return requested;
         }
 
-        /// <summary>LOD 判定の結果を捨て、Mesh と Skin Weights を元に戻す。</summary>
+        /// <summary>LOD 判定の結果を捨て、Mesh・Skin Weights・Dither Fade の表示を元に戻す。</summary>
         internal void ResetRuntimeState()
         {
             _currentLod = -1;
             _culled = false;
+            _nearCulled = false;
             IsInvisible = false;
             CurrentInterval = 0;
             RestoreOriginalMeshAndQuality();
+            if (_fadeState != FadeState.Visible)
+            {
+                ShowImmediately();
+            }
+            _fadeSnapPending = true;
         }
 
 #if UNITY_EDITOR
@@ -646,6 +975,8 @@ namespace AnimatorLodTest
             baseInterval = Mathf.Clamp(baseInterval, 0, MaxInterval);
             invisibleInterval = Mathf.Clamp(invisibleInterval, 0, MaxInterval);
             lodEvaluationInterval = Mathf.Clamp(lodEvaluationInterval, 1, MaxLodEvaluationInterval);
+            fadeDuration = Mathf.Max(0f, fadeDuration);
+            nearCullDistance = Mathf.Max(0f, nearCullDistance);
 
             // lodIntervals は LOD 1..N 用(要素数 = 境界数)
             int boundaries = lodRatios.Length;
@@ -825,8 +1156,15 @@ namespace AnimatorLodTest
         /// <summary>指定カメラでの LOD をランタイムと同じ式で求める(Culled は LodLevelCount)。</summary>
         public int EditorPreviewLod(Camera cam, out float ratio, out bool culled)
         {
-            ratio = ComputeScreenRatio(transform.localToWorldMatrix, new LodView(cam, cam.transform));
+            return EditorPreviewLod(cam, out ratio, out culled, out _);
+        }
+
+        /// <summary>指定カメラでの LOD と Near Culled をランタイムと同じ式で求める(Culled は LodLevelCount)。</summary>
+        public int EditorPreviewLod(Camera cam, out float ratio, out bool culled, out bool nearCulled)
+        {
+            ratio = ComputeScreenRatio(transform.localToWorldMatrix, new LodView(cam, cam.transform), out float distance);
             culled = IsCulledRatio(ratio);
+            nearCulled = IsNearCulledDistance(distance);
             return culled ? LodLevelCount : LevelForRatio(ratio);
         }
 

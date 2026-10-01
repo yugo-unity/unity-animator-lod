@@ -58,6 +58,24 @@ namespace AnimatorLodTest
             public bool IsAlive(out Mesh mesh) => Mesh.TryGetTarget(out mesh) && mesh != null;
         }
 
+        /// <summary>
+        /// Dither Fade のフェード用マテリアルの記録。元のマテリアルは弱参照で持つ(<see cref="WarmedMesh"/> と同じ理由)。
+        /// フェード用マテリアル自体はこのクラスが作ったものなので強参照で持ち、Play の終了時に破棄する。
+        /// </summary>
+        private sealed class FadeMaterial
+        {
+            public readonly System.WeakReference<Material> Source;
+            /// <summary>フェード用マテリアル。元のシェーダーが <see cref="AnimatorLod.DitherFadeKeyword"/> を持たなければ null(差し替えない)。</summary>
+            public Material Fade;
+
+            public FadeMaterial(Material source)
+            {
+                Source = new System.WeakReference<Material>(source);
+            }
+
+            public bool IsAlive(out Material source) => Source.TryGetTarget(out source) && source != null;
+        }
+
         /// <summary>Play 単位の状態(作り直すとリセットされる)。</summary>
         private sealed class State
         {
@@ -65,6 +83,8 @@ namespace AnimatorLodTest
             public readonly int[][] BucketCounts = CreateBucketCounts();
             /// <summary>Mesh の instance ID ごとに温めた Skin Weights(<see cref="WarmedMesh"/>)。</summary>
             public readonly Dictionary<int, WarmedMesh> WarmedSkinWeights = new Dictionary<int, WarmedMesh>();
+            /// <summary>元のマテリアルの instance ID ごとのフェード用マテリアル(<see cref="FadeMaterial"/>)。</summary>
+            public readonly Dictionary<int, FadeMaterial> FadeMaterials = new Dictionary<int, FadeMaterial>();
             public int LastTickFrame = -1;
             // Transform のマネージドラッパーを強参照で保持し、cam.transform 経由の散発的な GC.Alloc(ラッパー再生成)を避ける
             public Camera MainCamera;
@@ -85,6 +105,8 @@ namespace AnimatorLodTest
             public float DeltaTime;
             public float UnscaledDeltaTime;
             public AnimatorLod.LodView MainView;
+            // URP の LOD Cross Fade(Dither Fade を動かすか)。Tick ごとに 1 回だけ読む
+            public bool DitherFadeSupported;
             // 直前の個体の LodCamera とその LodView(同じカメラが続く間は計算を使い回す)
             public Camera LodCamera;
             public AnimatorLod.LodView LodCameraView;
@@ -148,6 +170,12 @@ namespace AnimatorLodTest
             for (int i = 0; i < instances.Count; i++)
             {
                 instances[i].Schedule.Index = -1;
+            }
+            // フェード用マテリアルは DontSave で Play の終了後も残るため明示的に破棄する
+            // (フェード中の個体は、この後の OnDisable で元のマテリアルに戻る)
+            foreach (var entry in s_state.FadeMaterials.Values)
+            {
+                DestroyFadeMaterial(entry);
             }
             s_state = new State();
         }
@@ -335,6 +363,7 @@ namespace AnimatorLodTest
                 DeltaTime = Time.deltaTime,
                 UnscaledDeltaTime = Time.unscaledDeltaTime,
                 MainView = UpdateMainCamera(state),
+                DitherFadeSupported = AnimatorLod.DitherFadeSupported,
             };
             int invisible = 0;
             int enabledCount = 0;
@@ -364,7 +393,8 @@ namespace AnimatorLodTest
             opt.EditorApplyInspectorChanges();
 #endif
 
-            bool lodActive = opt.LodEnabled || opt.MeshLodEnabled || opt.SkinWeightsLodEnabled;
+            bool ditherFade = opt.DitherFadeEnabled && ctx.DitherFadeSupported;
+            bool lodActive = opt.LodEnabled || opt.MeshLodEnabled || opt.SkinWeightsLodEnabled || ditherFade;
             // 設定の変更後は間引きの位相に関わらず次の Tick で LOD を引き直す
             bool lodRefresh = opt.ConsumeLodRefresh();
             if (!lodActive && opt.HasLodState)
@@ -375,11 +405,13 @@ namespace AnimatorLodTest
             if (!opt.LodEnabled)
             {
                 // Animation LOD が無効なら間引かず毎フレーム評価する。
-                // Mesh LOD / Skin Weights の LOD 判定は LodEvaluationInterval フレームに 1 回へ分散する(切替は最大でその分遅れる)
+                // Mesh LOD / Skin Weights / Dither Fade の LOD 判定は LodEvaluationInterval フレームに 1 回へ分散する(切替は最大でその分遅れる)
                 if (lodActive && (lodRefresh || !opt.HasEvaluatedLod || (frame + index) % opt.LodEvaluationInterval == 0))
                 {
                     opt.EvaluateLod(ResolveView(opt, ref ctx));
                 }
+                // フェードの進行は判定の間引きに関わらず毎フレーム
+                opt.UpdateDitherFade(ditherFade, ctx.DeltaTime);
                 opt.IsInvisible = false;
                 opt.CurrentInterval = 0;
                 // 毎フレーム評価するので即時評価要求は不要。残すと LOD を有効に戻したときに不要な強制評価になる
@@ -403,10 +435,14 @@ namespace AnimatorLodTest
             {
                 opt.EvaluateLod(ResolveView(opt, ref ctx));
             }
+            // フェードの進行は Animator の間引きに関わらず毎フレーム
+            opt.UpdateDitherFade(ditherFade, ctx.DeltaTime);
 
-            // 3. Interval 決定: 不可視、または Culled 比率未満(LOD カリング)は Invisible Interval を絶対値で適用
-            int interval = visible && !opt.IsCulled
-                ? opt.GetEffectiveInterval(opt.CurrentLod)
+            // 3. Interval 決定: 不可視、または Culled 比率未満(LOD カリング)は Invisible Interval を絶対値で適用。
+            //    Dither Fade 中の Culled はまだ見えているので LOD の Interval のまま。フェードアウト後は描画を止めるので不可視として扱われる
+            bool culledInterval = opt.IsCulled && !ditherFade;
+            int interval = visible && !culledInterval
+                ? opt.GetEffectiveInterval(Mathf.Min(opt.CurrentLod, opt.LodLevelCount - 1))
                 : opt.InvisibleInterval;
             interval = Mathf.Clamp(interval, 0, MaxEffectiveInterval);
             opt.CurrentInterval = interval;
@@ -658,6 +694,84 @@ namespace AnimatorLodTest
 
             mesh.GetBoneWeightBuffer(layout)?.Dispose();
             entry.Bits |= bit;
+        }
+
+        // ---- Dither Fade のフェード用マテリアル ----
+
+        /// <summary>
+        /// source に対するフェード用マテリアル(source の複製で <see cref="AnimatorLod.DitherFadeKeyword"/> を有効にしたもの)。
+        /// 全個体で共有し、初めて要求されたときに作る。source のシェーダーがキーワードを持たない、または Play 中でなければ source を返す。
+        /// 複製なので、作った後に source のプロパティを変えてもフェード中の見た目には反映されない。
+        /// </summary>
+        internal static Material GetFadeMaterial(Material source)
+        {
+            if (source == null || !Application.isPlaying)
+            {
+                return source;
+            }
+            var fadeMaterials = s_state.FadeMaterials;
+            int id = source.GetInstanceID();
+            if (fadeMaterials.TryGetValue(id, out var entry))
+            {
+                if (entry.IsAlive(out var recorded) && ReferenceEquals(recorded, source))
+                {
+                    return entry.Fade != null ? entry.Fade : source;
+                }
+                // 同じ instance ID で読み直された(アンロード後の Resources など)。古い複製は捨てて作り直す
+                DestroyFadeMaterial(entry);
+                fadeMaterials.Remove(id);
+            }
+            else
+            {
+                // 新しく記録する前に、元のマテリアルがアンロード・破棄された記録を捨てる
+                RemoveUnloadedFadeMaterials(fadeMaterials);
+            }
+
+            entry = new FadeMaterial(source);
+            var shader = source.shader;
+            var keyword = shader != null ? shader.keywordSpace.FindKeyword(AnimatorLod.DitherFadeKeyword) : default;
+            if (keyword.isValid)
+            {
+                var fade = new Material(source)
+                {
+                    name = source.name + " (AnimatorLod Dither Fade)",
+                    hideFlags = HideFlags.DontSave,
+                };
+                fade.EnableKeyword(keyword);
+                entry.Fade = fade;
+            }
+            fadeMaterials.Add(id, entry);
+            return entry.Fade != null ? entry.Fade : source;
+        }
+
+        private static void DestroyFadeMaterial(FadeMaterial entry)
+        {
+            if (entry.Fade != null)
+            {
+                // Play の終了時(ExitingPlayMode)にも呼ばれるので Immediate で消す
+                Object.DestroyImmediate(entry.Fade);
+            }
+            entry.Fade = null;
+        }
+
+        // RemoveUnloadedFadeMaterials の作業用(呼ぶたびに確保しない)
+        private static readonly List<int> s_unloadedMaterials = new List<int>();
+
+        private static void RemoveUnloadedFadeMaterials(Dictionary<int, FadeMaterial> fadeMaterials)
+        {
+            foreach (var pair in fadeMaterials)
+            {
+                if (!pair.Value.IsAlive(out _))
+                {
+                    s_unloadedMaterials.Add(pair.Key);
+                }
+            }
+            for (int i = 0; i < s_unloadedMaterials.Count; i++)
+            {
+                DestroyFadeMaterial(fadeMaterials[s_unloadedMaterials[i]]);
+                fadeMaterials.Remove(s_unloadedMaterials[i]);
+            }
+            s_unloadedMaterials.Clear();
         }
 
         // RemoveUnloadedMeshes の作業用(呼ぶたびに確保しない)

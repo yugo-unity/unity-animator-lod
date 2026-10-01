@@ -16,6 +16,9 @@
 | Editor | `Assets/Scripts/Editor/AnimatorLodBoundsCalculator.cs` | LOD 判定に使う Bounds を全クリップまたはデフォルトポーズから実測する |
 | Editor | `Assets/Scripts/Editor/AnimatorLodMeshReducer.cs` | Mesh LOD 用のリダクションメッシュを生成する |
 | ベンチマーク | `Assets/Benchmark/` | 検証シーン(AnimatorLodTest)用のスポナー・HUD・操作パネル |
+| シェーダー | `Assets/Scripts/Shaders/AnimatorLodDitherFade.hlsl` | Dither Fade 用の Shader Graph Custom Function |
+| ベンチマーク | `Assets/Benchmark/` | 検証シーン(AnimatorLodTest)用のスポナー・HUD・操作パネル、Dither Fade のテスト用グラフ・マテリアル・デモ用カメラ |
+| シーン | `Assets/Scenes/AnimatorLodDitherFadeTest.unity` | Dither Fade の確認用シーン。Armature_Lod を 2 列に並べ、カメラ(`DitherFadeDemoCamera`)が Culled の外から中央の列を突き抜けて往復し、Far と Near のフェードを交互に起こす。中央の列はカメラが通り抜けるので Near のフェード、横の列は Near Cull Distance の外を通るので Far のフェードだけが起きる。Dither Fade の設定とマテリアルはプレハブのものを使う。Play 中は左上に一時停止・手動の位置操作と、各個体の状態を表示する。Tools > Animator LOD Test > Setup Dither Fade Scene で作り直せる |
 
 ## Inspector
 
@@ -37,12 +40,12 @@ Editor で準備されていないコンポーネント(実行時に `AddCompone
 
 ### LOD
 
-LOD の境界と LOD Camera は Animation LOD・Mesh LOD・Skin Weights で共通です。3 つのうちどれかが有効なら LOD を判定します。判定は 3 つで共通の 1 回で、機能ごとに重複して行うことはありません。
+LOD の境界と LOD Camera は Animation LOD・Mesh LOD・Skin Weights・Dither Fade で共通です。どれかが有効なら LOD を判定します。判定は全機能で共通の 1 回で、機能ごとに重複して行うことはありません。
 
 LOD の判定は毎フレームではありません。
 
 - Animation LOD が有効な間は、Animator を評価するフレームでだけ LOD を判定します。可視状態が変わったとき、`RequestImmediateUpdate()` の後、設定を変えたとき(`Set*Enabled` や Inspector での変更)、コンポーネントが有効になった直後の最初の判定では、すぐに判定します。可視判定そのものは毎フレーム行うので、画面に入った個体はすぐに更新が再開されます。
-- Animation LOD が無効な間(Mesh LOD / Skin Weights のみ)は、LOD Evaluation Interval フレームに 1 回、個体ごとにずらして判定します。
+- Animation LOD が無効な間(Mesh LOD / Skin Weights / Dither Fade のみ)は、LOD Evaluation Interval フレームに 1 回、個体ごとにずらして判定します。
 
 このため LOD の切り替わり(Mesh LOD / Skin Weights の切り替えを含む)は、最大でその個体の更新間隔の分、Animation LOD が無効な間は最大で LOD Evaluation Interval の分遅れます。
 
@@ -53,10 +56,13 @@ LOD の判定は毎フレームではありません。
 | Calculate from All Clips | Animator Controller の全クリップ・全ポーズをサンプリングし、すべてのポーズを包含する Bounds を実測します。空中のクリップなどで足元より下や左右非対称に広がることがあります。Animator に Controller が設定されていない場合は、エラーにせず Renderer の現在の Bounds(現在のポーズ)を使います。ランタイムでは計算しません。 |
 | Calculate from Default Pose | アニメーションを適用しないデフォルトポーズ(プレハブ / シーン上の個体に保存されたボーンの姿勢)で Bounds を実測します。Controller の有無や Optimize Game Objects に関係なく使えます。ポーズによってはメッシュが Bounds からはみ出します。ランタイムでは計算しません。 |
 | LOD Camera | Screen Size 比の計算に使うカメラです。未設定なら Camera.main を使います。どちらも無い場合は Screen Size 比を 100%(LOD 0)として扱います。判定に使うカメラは 1 台だけです(画面分割などで複数のカメラから見る場合は考慮しません)。 |
-| LOD Evaluation Interval | Animation LOD が無効な間の判定間隔(フレーム、1〜8)です(上記参照)。1 は毎フレームです。Animation LOD が有効な間と、Mesh LOD・Skin Weights がともに無効な間はグレーアウトします。 |
+| LOD Evaluation Interval | Animation LOD が無効な間の判定間隔(フレーム、1〜8)です(上記参照)。1 は毎フレームです。Animation LOD が有効な間と、Mesh LOD・Skin Weights・Dither Fade がすべて無効な間はグレーアウトします。 |
+| Dither Fade | Culled を下回ったとき、Near Cull Distance より近づいたときに、ディザでフェードアウトしてから描画を止めます(下記の Dither Fade 参照)。URP Asset の LOD Cross Fade が無効な間はグレーアウトし、無効として扱います。 |
+| Fade Duration (s) | フェード時間(秒、LODGroup と同じくスケールされた時間)です。既定は 0.5。0 は即時に切り替えます。Dither Fade が無効な間はグレーアウトします。 |
 | Ratios | Bounds の外接球が画面高さに占める割合(Screen Size 比)で LOD を選びます。左が 100%(近)、右が 0%(遠)で、境界をドラッグして編集します。 |
+| Near Cull Distance | LOD Camera が外接球の中心からこの距離(m)より近づくと、フェードアウトして描画を止めます。0 で無効です。Dither Fade が無効な間はグレーアウトします。 |
 | LOD n Transition (% Screen Size) | Screen Size 比がこの値を下回ると LOD n に入ります。隣の境界を越えて設定することはできません(降順)。 |
-| Culled (% Screen Size) | この値を下回ると LOD カリングとして扱い、Invisible Interval を適用します。0 で無効です。Mesh LOD と Skin Weights は最後の LOD の設定を使います。 |
+| Culled (% Screen Size) | この値を下回ると LOD カリングとして扱い、Invisible Interval を適用します。0 で無効です。Mesh LOD と Skin Weights は最後の LOD の設定を使います。Dither Fade が有効なら、代わりにフェードアウトしてから描画を止めます。 |
 | - Level / + Level | LOD の段数を増減します。 |
 
 Screen Size 比は近似です。外接球の半径は、Bounds の外接球の半径に各軸のワールドスケールの最大を掛けて求めます(各軸のスケールは `localToWorldMatrix` の列ベクトルの長さで、せん断が無ければ `lossyScale` の絶対値と同じ)。透視投影と正射影のどちらのカメラにも対応します。透視投影では「この半径 ÷ (カメラまでの距離 × tan(FOV / 2))」、正射影では「この半径 ÷ `orthographicSize`」で、正射影の値は距離に依存しません。
@@ -118,12 +124,26 @@ GPU Skinning は、メッシュとボーン数の組ごとに、初めて描画�
 - 実行中に `QualitySettings.skinWeights` を変えた場合、新しく必要になったボーン数のバッファは事前には作られず、初めて描画するときに作られます(描画は正しく行われます)。変更後に `Prewarm()` を呼び直すと事前に作れます。
 - 作成済みの記録はメッシュを弱参照で持つため、`Resources.UnloadUnusedAssets` や AssetBundle の解放によるメッシュのアンロードを妨げません。アンロード後に読み直したメッシュは、あらためて作成します。アンロード・破棄されたメッシュの記録は、次に新しいメッシュを記録するときに削除します。
 
+#### Dither Fade
+
+Culled を下回ったとき(遠)と、LOD Camera が Near Cull Distance より近づいたとき(近)に、画面空間のディザでフェードアウトし、終わったら描画を止めます(`SkinnedMeshRenderer.forceRenderingOff`)。その範囲を出るとフェードインします。LOD 間はクロスフェードせず、ハードスイッチのままです。
+
+- フェードは時間ベースです(Fade Duration、スケールされた時間)。途中で向きが逆になったときは、0 からやり直さずに今の進み具合から戻ります。フェードは毎フレーム進みますが、始まるタイミングは上記の LOD 判定に従うため、最大で更新間隔の分遅れます。描画を止めた状態から戻るときは(Renderer が可視にならないので)LOD 判定でしか検出できず、最大で Invisible Interval の分遅れます。
+- コンポーネントが有効になった後の最初の判定ですでに Culled の個体は、フェードアウトせずにすぐ描画を止めます。
+- Culled を下回ってフェードしている間はまだ見えているので、Invisible Interval ではなく最後の LOD の更新間隔を使います。描画を止めた後は不可視として扱われ、Invisible Interval になります。
+- フェード量は Renderer Shader User Value(`SetShaderUserValue`)の下位 8 bit でシェーダーに渡します(0 = 完全表示、255 = 完全に消えた)。上位 24 bit は予約で、0 を書きます。値は描画ごとのデータに載るので、SRP Batcher は崩れません。
+- フェード中だけ、Renderer の `sharedMaterials` をフェード用マテリアル(元のマテリアルの複製で、キーワード `ANIMATOR_LOD_DITHER_FADE` を有効にしたもの)に差し替えます。フェードしていない個体は元のマテリアル、つまりディザの `clip` を含まないバリアントで描かれます。フェード用マテリアルは元のマテリアルごとに 1 つ作って全個体で共有し、Play の終了時に破棄します。シェーダーがこのキーワードを持たないマテリアルは差し替えません(見た目のフェードは無く、最後に描画を止めることだけ行います)。
+- フェード用マテリアルは、Dither Fade が有効な状態でコンポーネントが有効になったときと `Prewarm()` を呼んだときに作ります(Play 中のみ)。ランタイムで Dither Fade を有効にした場合は、最初にフェードが起きたときに作り、そのフレームで確保が発生します。シェーダーバリアント自体の事前準備は行いません。
+- シェーダー側: `Assets/Scripts/Shaders/AnimatorLodDitherFade.hlsl` が Shader Graph の Custom Function(File モード、関数名 `AnimatorLodDitherFade`)です。Boolean キーワード(Reference `ANIMATOR_LOD_DITHER_FADE`、Multi Compile、Local。Shader Feature にするとビルドで有効側のバリアントが落ちます)を宣言し、そのキーワードが有効なときだけ Alpha をこの関数に通してください(Alpha → 関数 → Alpha ブロック)。ディザのテクスチャと比較は URP の LOD Cross Fade と同じなので、URP Asset の Dithering Type に従います。影と Depth のパスでも関数を実行させるには、Alpha ブロックが全パスで生成される必要があります。URP Lit では Alpha Clipping・Transparent・Allow Material Override のいずれかを有効にしてください。`Assets/Benchmark/Shaders/AnimatorLodDitherFadeLit.shadergraph`(と `Assets/Benchmark/Materials/AnimatorLodDitherFadeLit.mat`)が、この形に組んだテスト用のグラフです。
+- URP Asset の LOD Cross Fade が必要です(ランタイムでは、URP が Asset の設定を反映する `QualitySettings.enableLODCrossFade` を見ます)。無効な間は Dither Fade を無効として扱います(マテリアルを差し替えない、Near Cull Distance も効かない、Culled で描画を止めない)。ビルドに含まれる全 URP Asset で LOD Cross Fade が無効なら、`ANIMATOR_LOD_DITHER_FADE` のバリアントをビルドから取り除きます(プレイヤーと AssetBundle のビルド。URP 自身のストリップと同じく、アクティブなビルドターゲットの URP Asset を見ます)。
+
 ## Scene View
 
 Hierarchy で AnimatorLod を選択すると、その頭上に現在の LOD が表示されます。
 
-- Play 中: AnimatorLodSystem の判定結果(LOD、Screen Size 比、Interval、位相バケット、可視状態、Mesh LOD と Skin Weights の現在値)。
+- Play 中: AnimatorLodSystem の判定結果(LOD、Screen Size 比、Interval、位相バケット、可視状態、Mesh LOD と Skin Weights の現在値、Dither Fade の状態(表示中 / フェード中と表示量 / 描画停止))。
 - 編集中: LOD Camera(未設定なら Camera.main、それも無ければ Scene カメラ)で、ランタイムと同じ式を使ったプレビュー。
+- LOD Camera が Near Cull Distance より近い間は「Near Culled」と表示します(Dither Fade が有効なときのみ)。
 
 ## ランタイム API
 
@@ -132,7 +152,9 @@ Hierarchy で AnimatorLod を選択すると、その頭上に現在の LOD が�
 | `SetLodEnabled(bool)` | Animation LOD の有効/無効 |
 | `SetMeshLodEnabled(bool)` | Mesh LOD の有効/無効。切り替えたときに必要なボーン重みバッファを事前に作り、無効化時は元のメッシュに戻す |
 | `SetSkinWeightsLodEnabled(bool)` | Skin Weights の有効/無効。切り替えたときに必要なボーン重みバッファを事前に作り、無効化時は元の設定に戻す |
-| `Prewarm()` | Mesh LOD / Skin Weights が使うボーン重みバッファを今すぐ作る。プレハブのアセットに対しても呼べる |
+| `SetDitherFadeEnabled(bool)` | Dither Fade の有効/無効。無効化時は、フェード中・描画停止中の個体も次の判定で通常の表示に戻す。フェード用マテリアルはここでは作らない(Dither Fade の節を参照) |
+| `Prewarm()` | Mesh LOD / Skin Weights が使うボーン重みバッファと、Dither Fade のフェード用マテリアル(Play 中で Dither Fade が有効なとき)を今すぐ作る。プレハブのアセットに対しても呼べる |
+| `FadeDuration` / `NearCullDistance` | Dither Fade のフェード時間(秒)と Near Cull Distance(m)の取得と設定。負の値は 0 に丸める |
 | `BaseInterval` / `InvisibleInterval` | 更新間隔の取得と設定。0〜4 の範囲外の値は丸める |
 | `LodEvaluationInterval` | LOD Evaluation Interval の取得と設定。1〜8 の範囲外の値は丸める |
 | `Speed` | Animator の再生速度。`Animator.speed` の代わりに使う(下記) |
@@ -148,8 +170,10 @@ Hierarchy で AnimatorLod を選択すると、その頭上に現在の LOD が�
 | `LodCamera` / `LodBounds` / `LodBoundsSource` | LOD Camera、Bounds、Bounds をどこから求めたか(Inspector の Status) |
 | `LodLevelCount` | LOD の段数(境界の数 + 1) |
 | `GetEffectiveInterval(level)` | LOD `level` の有効な更新間隔(Base Interval + LOD n Interval。Invisible Interval は考慮しない) |
-| `CurrentLod` | 直近の判定の LOD。最初の判定の前と、コンポーネントまたは 3 機能がすべて無効な間は -1。Culled の間は `LodLevelCount` |
+| `CurrentLod` | 直近の判定の LOD。最初の判定の前と、コンポーネントまたは LOD の全機能(Animation LOD・Mesh LOD・Skin Weights・Dither Fade)が無効な間は -1。Culled の間は `LodLevelCount` |
 | `CurrentScreenRatio` / `IsCulled` | 直近の判定の Screen Size 比と Culled かどうか |
+| `DitherFadeEnabled` / `AnimatorLod.DitherFadeSupported` | Dither Fade の設定値と、URP の LOD Cross Fade が有効か(両方 true のときだけ Dither Fade が動く) |
+| `IsNearCulled` / `IsFading` / `IsFadeHidden` / `FadeVisibility` | 直近の判定の Near Cull Distance の状態と、Dither Fade の状態(フェード中か、描画を止めているか、表示量 1〜0) |
 | `IsInvisible` / `CurrentInterval` | 直近の判定の可視状態と、適用した更新間隔。Animation LOD が無効な間は常に `false` / 0 |
 | `CurrentBucket` | 割り当て中の位相バケット(毎フレーム評価の間は 0) |
 
@@ -162,7 +186,7 @@ Hierarchy で AnimatorLod を選択すると、その頭上に現在の LOD が�
 
 Play 中に Inspector で変更した値(LOD Camera、Bounds、各 LOD のメッシュや Skin Weights など)は、次の判定で反映されます(Editor のみ)。
 
-コンポーネントを新しく追加したときの既定値は、Mesh LOD と Skin Weights がどちらも無効です。
+コンポーネントを新しく追加したときの既定値は、Mesh LOD・Skin Weights・Dither Fade がいずれも無効です。
 
 ## 制約
 
@@ -177,6 +201,7 @@ Play 中に Inspector で変更した値(LOD Camera、Bounds、各 LOD のメッ
 - 生成した LOD メッシュは Read/Write が無効です。適用中に実行時のスクリプトから頂点などを読むと、空の配列が返ります。
 - Editor で準備されていないコンポーネント(実行時の `AddComponent` など)は非対応です。
 - Animator の Update Mode が Fixed(Animate Physics)の場合は非対応です。
+- Dither Fade には、URP Asset の LOD Cross Fade と、キーワード `ANIMATOR_LOD_DITHER_FADE` に対応したシェーダーが必要です(Dither Fade の節を参照)。References の Renderer の Renderer Shader User Value、`forceRenderingOff`、(フェード中は)`sharedMaterials` を書き換えます。フェード中にその Renderer のマテリアルを変えると、フェードの終了時に上書きされます。また、フェード用マテリアルを作った後に元のマテリアルを変更しても、フェード中の見た目には反映されません。
 - `AnimatorLodSystem` は PlayerLoop の Update 段の末尾に 1 回だけ挿入されます。他のシステムが後から `PlayerLoop.SetPlayerLoop` で既定のツリーを丸ごと設定し直すと、この処理が外れ、次の Play(ビルドでは次の起動)まで動きません。
 
 ## 最適化余地(未実装)

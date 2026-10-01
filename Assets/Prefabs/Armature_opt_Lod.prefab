@@ -48,6 +48,18 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: -1233995669620314668, guid: d85a4bf56b95b8a46a224d24397c13c7, type: 3}
+      propertyPath: 'm_Materials.Array.data[0]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
+    - target: {fileID: -1233995669620314668, guid: d85a4bf56b95b8a46a224d24397c13c7, type: 3}
+      propertyPath: 'm_Materials.Array.data[1]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
+    - target: {fileID: -1233995669620314668, guid: d85a4bf56b95b8a46a224d24397c13c7, type: 3}
+      propertyPath: 'm_Materials.Array.data[2]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
     - target: {fileID: 919132149155446097, guid: d85a4bf56b95b8a46a224d24397c13c7, type: 3}
       propertyPath: m_Name
       value: Armature_opt_Lod
@@ -107,7 +119,10 @@ MonoBehaviour:
   baseInterval: 0
   invisibleInterval: 4
   lodIntervals: 0200000004000000
-  cullRatio: 0.05
+  cullRatio: 0.07
+  ditherFadeEnabled: 1
+  fadeDuration: 0.5
+  nearCullDistance: 1
   meshLodEnabled: 1
   skinWeightsLodEnabled: 1
   lodSkinQualities: 000000000200000001000000

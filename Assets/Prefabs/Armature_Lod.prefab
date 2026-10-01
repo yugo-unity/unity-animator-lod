@@ -52,6 +52,18 @@ PrefabInstance:
       propertyPath: m_Name
       value: Armature_Lod
       objectReference: {fileID: 0}
+    - target: {fileID: 4885301371922852569, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
+      propertyPath: 'm_Materials.Array.data[0]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
+    - target: {fileID: 4885301371922852569, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
+      propertyPath: 'm_Materials.Array.data[1]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
+    - target: {fileID: 4885301371922852569, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
+      propertyPath: 'm_Materials.Array.data[2]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 428e4a04b44408a418a2594644b25af3, type: 2}
     - target: {fileID: 5866666021909216657, guid: c4b6e2a37f7eb2b4b88206a9f391011d, type: 3}
       propertyPath: m_Controller
       value: 
@@ -117,7 +129,10 @@ MonoBehaviour:
   baseInterval: 0
   invisibleInterval: 4
   lodIntervals: 0200000004000000
-  cullRatio: 0.049999997
+  cullRatio: 0.07
+  ditherFadeEnabled: 1
+  fadeDuration: 0.5
+  nearCullDistance: 1
   meshLodEnabled: 1
   skinWeightsLodEnabled: 1
   lodSkinQualities: 000000000200000001000000
