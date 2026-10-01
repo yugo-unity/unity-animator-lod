@@ -15,7 +15,7 @@
 | Editor | `Assets/Scripts/Editor/AnimatorLodEditor.cs` | Inspector と Scene View の LOD 表示 |
 | Editor | `Assets/Scripts/Editor/AnimatorLodBoundsCalculator.cs` | LOD 判定に使う Bounds を全クリップまたはデフォルトポーズから実測する |
 | Editor | `Assets/Scripts/Editor/AnimatorLodMeshReducer.cs` | Mesh LOD 用のリダクションメッシュを生成する |
-| ベンチマーク | `Assets/Benchmark/` | 検証シーン(AnimatorLodTest)用のスポナー・HUD・操作パネル |
+| Editor | `Assets/Scripts/Editor/AnimatorLodDitherFadeStripper.cs` | ビルドに含まれる全 URP Asset で LOD Cross Fade が無効なとき、Dither Fade のシェーダーバリアントを取り除く |
 | シェーダー | `Assets/Scripts/Shaders/AnimatorLodDitherFade.hlsl` | Dither Fade 用の Shader Graph Custom Function |
 | ベンチマーク | `Assets/Benchmark/` | 検証シーン(AnimatorLodTest)用のスポナー・HUD・操作パネル、Dither Fade のテスト用グラフ・マテリアル・デモ用カメラ |
 | シーン | `Assets/Scenes/AnimatorLodDitherFadeTest.unity` | Dither Fade の確認用シーン。Armature_Lod を 2 列に並べ、カメラ(`DitherFadeDemoCamera`)が Culled の外から中央の列を突き抜けて往復し、Far と Near のフェードを交互に起こす。中央の列はカメラが通り抜けるので Near のフェード、横の列は Near Cull Distance の外を通るので Far のフェードだけが起きる。Dither Fade の設定とマテリアルはプレハブのものを使う。Play 中は左上に一時停止・手動の位置操作と、各個体の状態を表示する。Tools > Animator LOD Test > Setup Dither Fade Scene で作り直せる |

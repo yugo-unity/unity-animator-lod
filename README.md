@@ -15,7 +15,7 @@ A test project for reducing CPU/GPU cost when many Animators are on screen. The 
 | Editor | `Assets/Scripts/Editor/AnimatorLodEditor.cs` | Inspector and Scene View LOD label |
 | Editor | `Assets/Scripts/Editor/AnimatorLodBoundsCalculator.cs` | Measures the Bounds used for LOD from all clips or the default pose |
 | Editor | `Assets/Scripts/Editor/AnimatorLodMeshReducer.cs` | Generates reduced meshes for Mesh LOD |
-| Benchmark | `Assets/Benchmark/` | Spawner, HUD, and control panel for the test scene (AnimatorLodTest) |
+| Editor | `Assets/Scripts/Editor/AnimatorLodDitherFadeStripper.cs` | Strips the Dither Fade shader variants from builds whose URP Assets all have LOD Cross Fade off |
 | Shader | `Assets/Scripts/Shaders/AnimatorLodDitherFade.hlsl` | Shader Graph Custom Function for Dither Fade |
 | Benchmark | `Assets/Benchmark/` | Spawner, HUD, and control panel for the test scene (AnimatorLodTest); Dither Fade test graph, material, and demo camera |
 | Scene | `Assets/Scenes/AnimatorLodDitherFadeTest.unity` | Dither Fade check scene: two rows of Armature_Lod and a camera (`DitherFadeDemoCamera`) that travels from beyond Culled through the center row and back, so the far and near fades alternate. The center row is passed through (near fade), the side row stays outside Near Cull Distance (far fade only). Uses the prefab's Dither Fade settings and material. Pause / manual position and per-instance state are shown at the top left in Play mode. Regenerate with Tools > Animator LOD Test > Setup Dither Fade Scene |
